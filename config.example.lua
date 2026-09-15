@@ -28,6 +28,7 @@ config = {
 
   lyrics = {
     root = "~/.local/share/raylyrics/lyrics",
+    cache_ttl_days = 30,   -- cached remote lyrics expire after this; <= 0 disables
   },
 
   -- Arbitrary values readable from presets as `config.preset_params.<key>`.

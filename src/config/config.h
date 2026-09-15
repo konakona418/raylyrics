@@ -35,6 +35,7 @@ struct Config {
     FontConfig font;
     ColorConfig colors;
     std::string lyrics_root;
+    int cache_ttl_days = 30;  // <= 0 disables cache expiry
     std::string preset = "default";
     int fps = 60;
 

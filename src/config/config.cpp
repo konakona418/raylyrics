@@ -95,6 +95,7 @@ bool Config::Load(const std::string& path) {
         sol::table table = lyrics_object.as<sol::table>();
         const std::string root_path = table["root"].get_or(std::string());
         if (!root_path.empty()) lyrics_root = ExpandHome(root_path);
+        cache_ttl_days = table["cache_ttl_days"].get_or(cache_ttl_days);
     }
 
     preset = root["preset"].get_or(preset);

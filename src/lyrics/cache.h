@@ -21,7 +21,11 @@ public:
         long mtime = 0;
     };
 
-    explicit LyricsCache(std::string dir);
+    // Entries older than the TTL are treated as missing and dropped on lookup.
+    // A non-positive TTL disables expiry.
+    static constexpr long kDefaultTtlSeconds = 30L * 24 * 60 * 60;
+
+    explicit LyricsCache(std::string dir, long ttl_seconds = kDefaultTtlSeconds);
 
     // $XDG_CACHE_HOME/raylyrics/lyrics, or ~/.cache/raylyrics/lyrics.
     static std::string DefaultDir();
@@ -31,6 +35,7 @@ public:
                            const std::string& album, double duration);
 
     const std::string& dir() const { return dir_; }
+    long ttl_seconds() const { return ttl_seconds_; }
 
     // Returns true and fills `out` on a hit.
     bool Get(const std::string& artist, const std::string& title, const std::string& album,
@@ -46,6 +51,9 @@ public:
     // Removes everything. Returns the number of lyrics entries removed.
     int Clear();
 
+    // Removes every expired entry. Returns the number of lyrics entries removed.
+    int Prune();
+
     // All entries, sorted by artist then title.
     std::vector<Entry> List() const;
 
@@ -53,6 +61,7 @@ private:
     std::string PathFor(const std::string& key, const char* extension) const;
 
     std::string dir_;
+    long ttl_seconds_ = kDefaultTtlSeconds;
 };
 
 }  // namespace raylyrics

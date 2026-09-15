@@ -417,7 +417,9 @@ int OnSearchCandidates(void* user_data, const char* artist, const char* title, c
 }
 
 int RunCacheCommand(int argc, char** argv) {
-    raylyrics::LyricsCache cache(raylyrics::LyricsCache::DefaultDir());
+    const raylyrics::Config config = raylyrics::Config::LoadDefault();
+    const long ttl_seconds = static_cast<long>(config.cache_ttl_days) * 24 * 60 * 60;
+    raylyrics::LyricsCache cache(raylyrics::LyricsCache::DefaultDir(), ttl_seconds);
     const std::string action = (argc > 2) ? argv[2] : "list";
 
     if (action == "dir") {
@@ -427,19 +429,33 @@ int RunCacheCommand(int argc, char** argv) {
 
     if (action == "list") {
         const std::vector<raylyrics::LyricsCache::Entry> entries = cache.List();
+        const long now = static_cast<long>(std::time(nullptr));
         for (const raylyrics::LyricsCache::Entry& entry : entries) {
+            const long age_seconds = now - entry.mtime;
+            char age[16];
+            if (age_seconds >= 24 * 3600) {
+                std::snprintf(age, sizeof(age), "%ldd", age_seconds / (24 * 3600));
+            } else {
+                std::snprintf(age, sizeof(age), "%ldh", age_seconds / 3600);
+            }
             std::printf("%s  %s - %s", entry.key.c_str(), entry.artist.c_str(),
                         entry.title.c_str());
             if (!entry.album.empty()) std::printf("  [%s]", entry.album.c_str());
-            std::printf("  %lds  %ldB  %s\n", static_cast<long>(entry.duration + 0.5), entry.size,
-                        entry.source.c_str());
+            std::printf("  %lds  %ldB  %s  %s\n", static_cast<long>(entry.duration + 0.5),
+                        entry.size, age, entry.source.c_str());
         }
-        std::printf("%zu entries in %s\n", entries.size(), cache.dir().c_str());
+        std::printf("%zu entries in %s (ttl %ldd)\n", entries.size(), cache.dir().c_str(),
+                    cache.ttl_seconds() / (24 * 3600));
         return 0;
     }
 
     if (action == "clear") {
         std::printf("removed %d entries from %s\n", cache.Clear(), cache.dir().c_str());
+        return 0;
+    }
+
+    if (action == "prune") {
+        std::printf("removed %d expired entries from %s\n", cache.Prune(), cache.dir().c_str());
         return 0;
     }
 
@@ -456,7 +472,7 @@ int RunCacheCommand(int argc, char** argv) {
         return 0;
     }
 
-    std::fprintf(stderr, "usage: raylyrics cache [list|clear|remove <key>|dir]\n");
+    std::fprintf(stderr, "usage: raylyrics cache [list|clear|prune|remove <key>|dir]\n");
     return 1;
 }
 

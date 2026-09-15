@@ -52,9 +52,12 @@ bool HasSuffix(const std::string& value, const char* suffix) {
     return value.size() >= length && value.compare(value.size() - length, length, suffix) == 0;
 }
 
+long NowSeconds() { return static_cast<long>(g_get_real_time() / 1000000); }
+
 }  // namespace
 
-LyricsCache::LyricsCache(std::string dir) : dir_(std::move(dir)) {}
+LyricsCache::LyricsCache(std::string dir, long ttl_seconds)
+    : dir_(std::move(dir)), ttl_seconds_(ttl_seconds) {}
 
 std::string LyricsCache::DefaultDir() { return CacheRoot() + "/lyrics"; }
 
@@ -82,7 +85,18 @@ std::string LyricsCache::PathFor(const std::string& key, const char* extension) 
 
 bool LyricsCache::Get(const std::string& artist, const std::string& title, const std::string& album,
                       double duration, std::string* out) const {
-    return ReadFile(PathFor(Key(artist, title, album, duration), ".lrc"), out);
+    const std::string key = Key(artist, title, album, duration);
+    const std::string path = PathFor(key, ".lrc");
+
+    struct stat info;
+    if (stat(path.c_str(), &info) != 0) return false;
+    if (ttl_seconds_ > 0 && NowSeconds() - static_cast<long>(info.st_mtime) > ttl_seconds_) {
+        // Expired: drop it so the next request refetches.
+        std::remove(path.c_str());
+        std::remove(PathFor(key, ".json").c_str());
+        return false;
+    }
+    return ReadFile(path, out);
 }
 
 void LyricsCache::Put(const std::string& artist, const std::string& title, const std::string& album,
@@ -125,6 +139,16 @@ int LyricsCache::Clear() {
         if (std::remove((dir_ + "/" + filename).c_str()) == 0 && lyrics) removed++;
     }
     g_dir_close(dir);
+    return removed;
+}
+
+int LyricsCache::Prune() {
+    if (ttl_seconds_ <= 0) return 0;
+    int removed = 0;
+    const long now = NowSeconds();
+    for (const Entry& entry : List()) {
+        if (now - entry.mtime > ttl_seconds_ && Remove(entry.key)) removed++;
+    }
     return removed;
 }
 

@@ -277,8 +277,9 @@ raylyrics ctl quit
 `cache` 子命令直接操作磁盘缓存，不需要运行中的实例：
 
 ```
-raylyrics cache list               # key / artist - title / album / duration / size / source
+raylyrics cache list               # key / artist - title / album / duration / size / age / source
 raylyrics cache remove <key>
+raylyrics cache prune              # 删除已过期条目
 raylyrics cache clear
 raylyrics cache dir                # 打印缓存目录
 ```
@@ -325,8 +326,10 @@ end
 - `key` = FNV-1a 64 of `artist\x1f title\x1f album\x1f duration_seconds`（时长取整秒），输出 16 位 hex。
 - 查找顺序：本地 `.lrc` → 缓存 → LRCLIB；LRCLIB 命中后写入缓存。
 - key 用的是 `on_metadata` 归一化 + `SplitCombinedTitle` 之后的字段，保证查找与写入一致。
-- `list` 读 `.json` 元数据、stat 对应 `.lrc`（缺 `.lrc` 的孤儿元数据跳过），按 artist/title 排序。
-- 管理命令见 §7.9；目前没有 TTL/容量上限（缓存不会自动失效）。
+- **TTL**：`config.lyrics.cache_ttl_days`（默认 30，`<= 0` 关闭）。`Get` 惰性过期——命中前用
+  `.lrc` 的 mtime 判断，过期则删除并重新联网；`cache prune` 批量清理。
+- `list` 读 `.json` 元数据、stat 对应 `.lrc`（缺 `.lrc` 的孤儿元数据跳过），按 artist/title 排序，
+  并显示条目年龄。
 
 ## 8. 依赖
 系统：`wayland-client`、`wayland-egl`、`egl`、`gl`、`fontconfig`、`gio-2.0`、`glib-2.0`、
