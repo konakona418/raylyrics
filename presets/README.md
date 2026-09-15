@@ -41,4 +41,4 @@ return {
 **之前**读取，改动需重启；`fps`/`font`/`colors` 热重载即时生效。
 preset 顶层代码不要调 `f:*`（加载时还没有 GL）。
 
-API 细节见 `../docs/PLAN.md` §7.7 与 §7.12。
+API 细节见 `../README.md` 的 "Presets" 一节。
