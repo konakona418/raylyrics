@@ -69,6 +69,7 @@ add_executable(raylyrics
   main.cpp
   src/config/config.cpp
   src/ipc/control.cpp
+  src/lyrics/cache.cpp
   src/lyrics/encoding.cpp
   src/lyrics/lrc.cpp
   src/lyrics/lrclib.cpp

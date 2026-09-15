@@ -14,6 +14,7 @@
 
 #include "config/config.h"
 #include "ipc/control.h"
+#include "lyrics/cache.h"
 #include "lyrics/encoding.h"
 #include "lyrics/lrc.h"
 #include "lyrics/lrclib.h"
@@ -277,6 +278,7 @@ lrc_doc* TryLocalLyrics(const std::string& url, std::string artist, std::string 
 
 struct LyricsRuntime {
     lrclib_client* client = nullptr;
+    raylyrics::LyricsCache* cache = nullptr;
     lrc_doc* doc = nullptr;
     uint64_t generation = ~0ull;
     uint64_t doc_serial = 0;
@@ -286,12 +288,20 @@ struct LyricsRuntime {
 struct RemoteRequest {
     LyricsRuntime* runtime;
     uint64_t generation;
+    std::string artist;
+    std::string title;
+    std::string album;
+    double duration = 0.0;
 };
 
 void OnRemoteLyrics(void* user_data, const lrclib_result* result) {
     auto* request = static_cast<RemoteRequest*>(user_data);
     LyricsRuntime* runtime = request->runtime;
     const uint64_t generation = request->generation;
+    const std::string artist = request->artist;
+    const std::string title = request->title;
+    const std::string album = request->album;
+    const double duration = request->duration;
     delete request;
 
     // The track changed while this request was in flight; drop the response.
@@ -299,6 +309,9 @@ void OnRemoteLyrics(void* user_data, const lrclib_result* result) {
 
     runtime->fetching = false;
     if (result->synced_lrc != nullptr) {
+        if (runtime->cache != nullptr) {
+            runtime->cache->Put(artist, title, album, duration, result->synced_lrc, "lrclib");
+        }
         if (runtime->doc != nullptr) lrc_free(runtime->doc);
         runtime->doc = lrc_parse(result->synced_lrc, std::strlen(result->synced_lrc));
         runtime->doc_serial++;
@@ -403,6 +416,50 @@ int OnSearchCandidates(void* user_data, const char* artist, const char* title, c
     return plugin->SelectSearchResult(query, results);
 }
 
+int RunCacheCommand(int argc, char** argv) {
+    raylyrics::LyricsCache cache(raylyrics::LyricsCache::DefaultDir());
+    const std::string action = (argc > 2) ? argv[2] : "list";
+
+    if (action == "dir") {
+        std::printf("%s\n", cache.dir().c_str());
+        return 0;
+    }
+
+    if (action == "list") {
+        const std::vector<raylyrics::LyricsCache::Entry> entries = cache.List();
+        for (const raylyrics::LyricsCache::Entry& entry : entries) {
+            std::printf("%s  %s - %s", entry.key.c_str(), entry.artist.c_str(),
+                        entry.title.c_str());
+            if (!entry.album.empty()) std::printf("  [%s]", entry.album.c_str());
+            std::printf("  %lds  %ldB  %s\n", static_cast<long>(entry.duration + 0.5), entry.size,
+                        entry.source.c_str());
+        }
+        std::printf("%zu entries in %s\n", entries.size(), cache.dir().c_str());
+        return 0;
+    }
+
+    if (action == "clear") {
+        std::printf("removed %d entries from %s\n", cache.Clear(), cache.dir().c_str());
+        return 0;
+    }
+
+    if (action == "remove") {
+        if (argc < 4) {
+            std::fprintf(stderr, "usage: raylyrics cache remove <key>\n");
+            return 1;
+        }
+        if (!cache.Remove(argv[3])) {
+            std::fprintf(stderr, "raylyrics: no such entry '%s'\n", argv[3]);
+            return 1;
+        }
+        std::printf("removed %s\n", argv[3]);
+        return 0;
+    }
+
+    std::fprintf(stderr, "usage: raylyrics cache [list|clear|remove <key>|dir]\n");
+    return 1;
+}
+
 int RunOverlay() {
     const raylyrics::Config config = raylyrics::Config::LoadDefault();
 
@@ -452,9 +509,11 @@ int RunOverlay() {
     int64_t lyric_offset_us = 0;
     std::string active_preset = config.preset;
 
+    raylyrics::LyricsCache cache(raylyrics::LyricsCache::DefaultDir());
     media_backend* media = media_mpris_create();
     LyricsRuntime runtime;
     runtime.client = lrclib_client_new();
+    runtime.cache = &cache;
     lrclib_set_selector(runtime.client, OnSearchCandidates, &plugin);
 
     uint64_t last_serial = ~0ull;
@@ -529,20 +588,35 @@ int RunOverlay() {
             plugin.NormalizeMetadata(meta);
 
             if (state->valid && !meta.title.empty()) {
+                std::string artist = meta.artist;
+                std::string title = meta.title;
+                if (artist.empty()) SplitCombinedTitle(title, &title, &artist);
+                const double duration_seconds = static_cast<double>(meta.duration_us) / 1e6;
                 const std::string url = state->url != nullptr ? state->url : "";
-                runtime.doc = TryLocalLyrics(url, meta.artist, meta.title, config.lyrics_root);
+
+                runtime.doc = TryLocalLyrics(url, artist, title, config.lyrics_root);
                 if (runtime.doc != nullptr) {
                     std::fprintf(stderr, "raylyrics: local lyrics for %s (%zu lines)\n",
-                                 meta.title.c_str(), lrc_line_count(runtime.doc));
+                                 title.c_str(), lrc_line_count(runtime.doc));
                     runtime.doc_serial++;
                 } else {
-                    std::string artist = meta.artist;
-                    std::string title = meta.title;
-                    if (artist.empty()) SplitCombinedTitle(title, &title, &artist);
-                    runtime.fetching = true;
-                    auto* request = new RemoteRequest{&runtime, state->generation};
-                    lrclib_get(runtime.client, artist.c_str(), title.c_str(), meta.album.c_str(),
-                               static_cast<double>(meta.duration_us) / 1e6, OnRemoteLyrics, request);
+                    std::string cached;
+                    if (cache.Get(artist, title, meta.album, duration_seconds, &cached)) {
+                        runtime.doc = lrc_parse(cached.data(), cached.size());
+                        std::fprintf(stderr, "raylyrics: cached lyrics for %s (%zu lines)\n",
+                                     title.c_str(),
+                                     runtime.doc != nullptr ? lrc_line_count(runtime.doc) : 0);
+                        runtime.doc_serial++;
+                    } else {
+                        runtime.fetching = true;
+                        auto* request = new RemoteRequest{&runtime, state->generation};
+                        request->artist = artist;
+                        request->title = title;
+                        request->album = meta.album;
+                        request->duration = duration_seconds;
+                        lrclib_get(runtime.client, artist.c_str(), title.c_str(), meta.album.c_str(),
+                                   duration_seconds, OnRemoteLyrics, request);
+                    }
                 }
             }
         }
@@ -622,6 +696,10 @@ int main(int argc, char** argv) {
 
     if (argc > 1 && std::strcmp(argv[1], "--mpris") == 0) {
         return RunMprisDump();
+    }
+
+    if (argc > 1 && std::strcmp(argv[1], "cache") == 0) {
+        return RunCacheCommand(argc, argv);
     }
 
     if (argc > 3 && std::strcmp(argv[1], "--lyrics") == 0) {

@@ -274,6 +274,15 @@ raylyrics ctl quit
 
 `offset` 直接加到媒体 position 上再算当前行，所以不用改 LRC 文件。
 
+`cache` 子命令直接操作磁盘缓存，不需要运行中的实例：
+
+```
+raylyrics cache list               # key / artist - title / album / duration / size / source
+raylyrics cache remove <key>
+raylyrics cache clear
+raylyrics cache dir                # 打印缓存目录
+```
+
 ### 7.10 逻辑钩子（config.lua）
 
 选播放器与歌词匹配的策略放在 `config.lua`（只加载一次，不随视觉 preset 热重载）。
@@ -307,6 +316,18 @@ end
 - `on_select` 只在 `media_selection_dirty()` 为真时调用（播放器集合或状态/元数据变化），不是每帧。
 - `lrclib_set_selector()` 把候选交给 `on_search`；返回 -1/越界则回退内置启发式。
 
+### 7.11 歌词缓存
+
+`src/lyrics/cache.{h,cpp}`（C++ 接口，仅 main 使用）。目录默认
+`$XDG_CACHE_HOME/raylyrics/lyrics`（否则 `~/.cache/raylyrics/lyrics`）。
+
+- 每条目两个文件：`<key>.lrc`（歌词）+ `<key>.json`（artist/title/album/duration/source/time）。
+- `key` = FNV-1a 64 of `artist\x1f title\x1f album\x1f duration_seconds`（时长取整秒），输出 16 位 hex。
+- 查找顺序：本地 `.lrc` → 缓存 → LRCLIB；LRCLIB 命中后写入缓存。
+- key 用的是 `on_metadata` 归一化 + `SplitCombinedTitle` 之后的字段，保证查找与写入一致。
+- `list` 读 `.json` 元数据、stat 对应 `.lrc`（缺 `.lrc` 的孤儿元数据跳过），按 artist/title 排序。
+- 管理命令见 §7.9；目前没有 TTL/容量上限（缓存不会自动失效）。
+
 ## 8. 依赖
 系统：`wayland-client`、`wayland-egl`、`egl`、`gl`、`fontconfig`、`gio-2.0`、`glib-2.0`、
 `libsoup-3.0`、`libcjson`、`lua5.4`、`iconv`（glibc）、`wayland-scanner`（1.26）。
@@ -328,6 +349,8 @@ end
    `config.on_select` 选活动播放器，`config.on_metadata` 归一化匹配字段，
    `config.on_search` 挑选 LRCLIB 搜索结果；preset 支持自定义 shader 的 Lua uniform 注入。
    已验证：两播放器同时在线、三个钩子均生效。
+7. **Phase 7** ✅：歌词磁盘缓存（`src/lyrics/cache.*`，本地 → 缓存 → LRCLIB）+
+   `raylyrics cache list|clear|remove <key>|dir`。已验证缓存命中与三个管理命令。
 
 ## 10. 风险与待确认
 
