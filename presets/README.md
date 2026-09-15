@@ -12,7 +12,7 @@ Lua 歌词样式。放到 `~/.config/raylyrics/presets/`，在 `config.lua` 设 
 | `boxed.lua` | 底部半透明背景条 |
 | `slide.lua` | 新行上滑淡入 |
 | `wave.lua` | 逐字正弦波动 |
-| `prism.lua` | 全屏彩虹：字符散落全屏、粒子、旋转多边形描边、bloom |
+| `prism.lua` | 全屏彩虹：字符按网格铺满全屏、粒子、旋转多边形描边、bloom |
 | `layeronly.lua` | 最小 layer 示例 |
 | `bloomdebug.lua` | bloom/后处理调试 |
 
