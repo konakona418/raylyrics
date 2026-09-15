@@ -2,7 +2,7 @@
 
 A lightweight, native Wayland desktop lyrics overlay. It follows the currently
 playing track over MPRIS and draws synced lyrics on a wlroots layer-shell
-surface, using the [Slug](https://github.com/linebender/slug) GPU glyph renderer
+surface, using the [Slug](https://github.com/konakona418/slug-raylib) GPU glyph renderer
 for sharp text at any size.
 
 Appearance is fully scriptable: a preset is a Lua file that draws primitives,
