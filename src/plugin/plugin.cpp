@@ -215,6 +215,8 @@ struct PluginHost::Impl {
 
     bool failed = false;
     bool is_default = true;
+    PresetSetup setup;
+    uint64_t reload_serial = 0;
     int last_line_index = -2;
     uint64_t last_generation = ~0ull;
     std::string preset_path;
@@ -813,6 +815,113 @@ struct PluginHost::Impl {
         }
     }
 
+    void ReadSetup(sol::table preset) {
+        setup = PresetSetup{};
+
+        sol::object viewport = preset["viewport"];
+        if (viewport.is<std::string>()) {
+            if (viewport.as<std::string>() == "fullscreen") {
+                setup.has_viewport = true;
+                setup.viewport_width = 0;
+                setup.viewport_height = 0;
+            }
+        } else if (viewport.is<sol::table>()) {
+            sol::table table = viewport.as<sol::table>();
+            setup.has_viewport = true;
+            setup.viewport_width = table["width"].get_or(0);
+            setup.viewport_height = table["height"].get_or(0);
+        }
+
+        sol::object layer = preset["layer"];
+        if (layer.is<std::string>()) {
+            const std::string name = layer.as<std::string>();
+            setup.has_layer = true;
+            if (name == "background") {
+                setup.layer = 0;
+            } else if (name == "bottom") {
+                setup.layer = 1;
+            } else if (name == "top") {
+                setup.layer = 2;
+            } else {
+                setup.layer = 3;
+            }
+        }
+
+        sol::object anchor = preset["anchor"];
+        if (anchor.is<std::string>()) {
+            setup.has_anchor = true;
+            setup.anchor = anchor.as<std::string>();
+        }
+
+        sol::object margin = preset["margin"];
+        if (margin.is<sol::table>()) {
+            sol::table table = margin.as<sol::table>();
+            setup.has_margin = true;
+            setup.margin_top = table["top"].get_or(0);
+            setup.margin_right = table["right"].get_or(0);
+            setup.margin_bottom = table["bottom"].get_or(0);
+            setup.margin_left = table["left"].get_or(0);
+        }
+
+        sol::object output = preset["output"];
+        if (output.is<std::string>()) {
+            setup.has_output = true;
+            setup.output = output.as<std::string>();
+        }
+
+        sol::object name_space = preset["namespace"];
+        if (name_space.is<std::string>()) {
+            setup.has_namespace = true;
+            setup.layer_namespace = name_space.as<std::string>();
+        }
+
+        sol::object exclusive_zone = preset["exclusive_zone"];
+        if (exclusive_zone.is<int>()) {
+            setup.has_exclusive_zone = true;
+            setup.exclusive_zone = exclusive_zone.as<int>();
+        }
+
+        sol::object keyboard = preset["keyboard"];
+        if (keyboard.is<bool>()) {
+            setup.has_keyboard = true;
+            setup.keyboard = keyboard.as<bool>();
+        }
+
+        sol::object fps = preset["fps"];
+        if (fps.is<int>()) {
+            setup.has_fps = true;
+            setup.fps = fps.as<int>();
+        }
+
+        sol::object font = preset["font"];
+        if (font.is<sol::table>()) {
+            sol::table table = font.as<sol::table>();
+            setup.has_font = true;
+            sol::object families = table["families"];
+            if (families.is<sol::table>()) {
+                sol::table list = families.as<sol::table>();
+                setup.font.families.clear();
+                for (std::size_t i = 1; i <= list.size(); i++) {
+                    sol::object entry = list[i];
+                    if (entry.is<std::string>()) {
+                        setup.font.families.push_back(entry.as<std::string>());
+                    }
+                }
+            }
+            setup.font.size = table["size"].get_or(setup.font.size);
+            setup.font.line_spacing = table["line_spacing"].get_or(setup.font.line_spacing);
+            setup.font.letter_spacing = table["letter_spacing"].get_or(setup.font.letter_spacing);
+        }
+
+        sol::object colors = preset["colors"];
+        if (colors.is<sol::table>()) {
+            sol::table table = colors.as<sol::table>();
+            setup.has_colors = true;
+            ReadColor(table["current"], setup.colors_current);
+            ReadColor(table["next"], setup.colors_next);
+        }
+    }
+
     void SetSource(const std::string& source) {
         sol::protected_function_result result = lua.safe_script(source, sol::script_pass_on_error);
         if (!result.valid()) {
@@ -820,6 +929,7 @@ struct PluginHost::Impl {
             on_frame = sol::protected_function();
             on_lyric = sol::protected_function();
             on_metadata = sol::protected_function();
+            setup = PresetSetup{};
             failed = false;
             is_default = true;
             return;
@@ -828,6 +938,7 @@ struct PluginHost::Impl {
         sol::object value = result;
         if (!value.is<sol::table>()) {
             std::fprintf(stderr, "raylyrics: preset must return a table\n");
+            setup = PresetSetup{};
             failed = false;
             is_default = true;
             return;
@@ -837,6 +948,7 @@ struct PluginHost::Impl {
         on_frame = preset["on_frame"];
         on_lyric = preset["on_lyric"];
         on_metadata = preset["on_metadata"];
+        ReadSetup(preset);
         failed = false;
     }
 
@@ -863,6 +975,7 @@ struct PluginHost::Impl {
         on_frame = preset["on_frame"];
         on_lyric = preset["on_lyric"];
         on_metadata = preset["on_metadata"];
+        ReadSetup(preset);
         failed = false;
         is_default = false;
     }
@@ -873,6 +986,7 @@ struct PluginHost::Impl {
         state = lua.create_table();
         last_line_index = -2;
         LoadPresetFile(preset_path);
+        reload_serial++;
         std::fprintf(stderr, "raylyrics: reloaded preset %s\n", preset_path.c_str());
     }
 };
@@ -1146,5 +1260,9 @@ void PluginHost::RunFrame(const PluginContext& ctx) {
 }
 
 bool PluginHost::using_default() const { return impl_->is_default; }
+
+const PresetSetup& PluginHost::setup() const { return impl_->setup; }
+
+uint64_t PluginHost::reload_serial() const { return impl_->reload_serial; }
 
 }  // namespace raylyrics

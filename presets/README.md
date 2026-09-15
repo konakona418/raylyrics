@@ -12,7 +12,33 @@ Lua 歌词样式。放到 `~/.config/raylyrics/presets/`，在 `config.lua` 设 
 | `boxed.lua` | 底部半透明背景条 |
 | `slide.lua` | 新行上滑淡入 |
 | `wave.lua` | 逐字正弦波动 |
+| `prism.lua` | 全屏彩虹：字符散落全屏、粒子、旋转多边形描边、bloom |
 | `layeronly.lua` | 最小 layer 示例 |
 | `bloomdebug.lua` | bloom/后处理调试 |
 
-API 细节见 `../docs/PLAN.md` §7.7。
+## preset 声明
+
+preset 除 `on_frame` 外可返回一份声明来覆盖 config（只写你想改的字段）：
+
+```lua
+return {
+  viewport = "fullscreen",           -- 或 { width = 1600, height = 400 }；0/负数 = 显示器尺寸
+  layer = "overlay",                 -- overlay | top | bottom | background
+  anchor = "bottom",                 -- 含 "full" 则四边；否则按 top/bottom/left/right 子串
+  margin = { top = 0, right = 0, bottom = 0, left = 0 },
+  output = "DP-1",
+  namespace = "raylyrics",
+  exclusive_zone = -1,               -- -1 = 不占空间
+  keyboard = false,
+  fps = 60,
+  font = { families = { "Noto Sans CJK SC" }, size = 72, line_spacing = 16, letter_spacing = 0 },
+  colors = { current = { 1, 1, 1, 1 }, next = { 1, 1, 1, 0.3 } },
+  on_frame = function(f, ctx) ... end,
+}
+```
+
+`viewport`/`layer`/`anchor`/`margin`/`output`/`namespace`/`exclusive_zone`/`keyboard` 在 `InitWindow()`
+**之前**读取，改动需重启；`fps`/`font`/`colors` 热重载即时生效。
+preset 顶层代码不要调 `f:*`（加载时还没有 GL）。
+
+API 细节见 `../docs/PLAN.md` §7.7 与 §7.12。

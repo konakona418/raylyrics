@@ -476,29 +476,61 @@ int RunCacheCommand(int argc, char** argv) {
     return 1;
 }
 
+// "fullscreen" anchors all four edges; otherwise every direction named in the
+// string is anchored (e.g. "bottom", "top-left", "top-left-right-bottom").
+int ParseAnchor(const std::string& name) {
+    if (name.find("full") != std::string::npos) {
+        return RL_WL_ANCHOR_TOP | RL_WL_ANCHOR_BOTTOM | RL_WL_ANCHOR_LEFT | RL_WL_ANCHOR_RIGHT;
+    }
+    int anchor = 0;
+    if (name.find("left") != std::string::npos) anchor |= RL_WL_ANCHOR_LEFT;
+    if (name.find("right") != std::string::npos) anchor |= RL_WL_ANCHOR_RIGHT;
+    if (name.find("top") != std::string::npos) anchor |= RL_WL_ANCHOR_TOP;
+    if (name.find("bottom") != std::string::npos) anchor |= RL_WL_ANCHOR_BOTTOM;
+    return anchor;
+}
+
 int RunOverlay() {
     const raylyrics::Config config = raylyrics::Config::LoadDefault();
 
+    // The preset can declare bootstrap settings (viewport, layer, anchor, ...),
+    // so evaluate it before the window exists. Neither the Lua host nor the
+    // config needs GL; presets must not call f:* at load time.
+    raylyrics::PluginHost plugin;
+    plugin.LoadConfig(raylyrics::Config::DefaultPath());
+    plugin.SetPreset(config.preset);
+    const raylyrics::PresetSetup& setup = plugin.setup();
+
     // layer-shell centers a surface horizontally when neither left nor right is
     // anchored; anchoring both pins it to the left edge with the requested width.
-    const std::string& anchor_name = config.overlay.anchor;
-    int anchor = 0;
-    if (anchor_name.find("left") != std::string::npos) anchor |= RL_WL_ANCHOR_LEFT;
-    if (anchor_name.find("right") != std::string::npos) anchor |= RL_WL_ANCHOR_RIGHT;
-    if (anchor_name.find("top") != std::string::npos) anchor |= RL_WL_ANCHOR_TOP;
-    if (anchor_name.find("bottom") != std::string::npos) anchor |= RL_WL_ANCHOR_BOTTOM;
+    const std::string anchor_name = setup.has_anchor ? setup.anchor : config.overlay.anchor;
+    int anchor = ParseAnchor(anchor_name);
     if (anchor == 0) anchor = RL_WL_ANCHOR_BOTTOM;
-    rl_wl_set_geometry(anchor, config.overlay.margin_top, config.overlay.margin_right,
-                       config.overlay.margin_bottom, config.overlay.margin_left);
-    rl_wl_set_output(config.overlay.output.empty() ? nullptr : config.overlay.output.c_str());
 
-    InitWindow(config.overlay.width, config.overlay.height, "raylyrics");
+    const int margin_top = setup.has_margin ? setup.margin_top : config.overlay.margin_top;
+    const int margin_right = setup.has_margin ? setup.margin_right : config.overlay.margin_right;
+    const int margin_bottom = setup.has_margin ? setup.margin_bottom : config.overlay.margin_bottom;
+    const int margin_left = setup.has_margin ? setup.margin_left : config.overlay.margin_left;
+    const std::string output = setup.has_output ? setup.output : config.overlay.output;
+    const int viewport_width = setup.has_viewport ? setup.viewport_width : config.overlay.width;
+    const int viewport_height = setup.has_viewport ? setup.viewport_height : config.overlay.height;
+
+    rl_wl_set_geometry(anchor, margin_top, margin_right, margin_bottom, margin_left);
+    rl_wl_set_output(output.empty() ? nullptr : output.c_str());
+    rl_wl_set_size(viewport_width, viewport_height);
+    if (setup.has_layer) rl_wl_set_layer(setup.layer);
+    if (setup.has_namespace) rl_wl_set_namespace(setup.layer_namespace.c_str());
+    if (setup.has_exclusive_zone) rl_wl_set_exclusive_zone(setup.exclusive_zone);
+    if (setup.has_keyboard) rl_wl_set_keyboard(setup.keyboard ? 1 : 0);
+
+    // raylib wants positive dimensions; the platform replaces them with the
+    // resolved surface size once the compositor has configured the surface.
+    InitWindow(viewport_width > 0 ? viewport_width : 800,
+               viewport_height > 0 ? viewport_height : 160, "raylyrics");
     if (!IsWindowReady()) {
         std::fprintf(stderr, "raylyrics: failed to initialize window\n");
         return 1;
     }
-
-    SetTargetFPS(config.fps);
 
     // Wayland surfaces are composited with premultiplied alpha. Blend RGB
     // straight but accumulate alpha premultiplied so anti-aliased edges do not
@@ -508,17 +540,35 @@ int RunOverlay() {
                               RL_FUNC_ADD, RL_FUNC_ADD);
     rlSetBlendMode(RL_BLEND_CUSTOM_SEPARATE);
 
-    raylyrics::TextStyle style;
-    style.families = config.font.families;
-    style.size = config.font.size;
-    style.line_spacing = config.font.line_spacing;
-    style.letter_spacing = config.font.letter_spacing;
+    uint64_t last_serial = ~0ull;
 
-    raylyrics::PluginHost plugin;
-    plugin.SetStyle(style);
-    plugin.SetColors(config.colors.current, config.colors.next);
-    plugin.LoadConfig(raylyrics::Config::DefaultPath());
-    plugin.SetPreset(config.preset);
+    // fps/font/colors may change on hot reload; re-apply after a preset switch.
+    auto apply_runtime_setup = [&]() {
+        const raylyrics::PresetSetup& current = plugin.setup();
+        SetTargetFPS(current.has_fps ? current.fps : config.fps);
+
+        raylyrics::TextStyle style;
+        style.families = config.font.families;
+        style.size = config.font.size;
+        style.line_spacing = config.font.line_spacing;
+        style.letter_spacing = config.font.letter_spacing;
+        if (current.has_font) {
+            if (!current.font.families.empty()) style.families = current.font.families;
+            style.size = current.font.size;
+            style.line_spacing = current.font.line_spacing;
+            style.letter_spacing = current.font.letter_spacing;
+        }
+        plugin.SetStyle(style);
+
+        if (current.has_colors) {
+            plugin.SetColors(current.colors_current, current.colors_next);
+        } else {
+            plugin.SetColors(config.colors.current, config.colors.next);
+        }
+        last_serial = ~0ull;  // re-prepare the text with the new style
+    };
+    apply_runtime_setup();
+    uint64_t last_reload_serial = plugin.reload_serial();
 
     raylyrics::ControlServer control;
     bool hidden = false;
@@ -532,7 +582,6 @@ int RunOverlay() {
     runtime.cache = &cache;
     lrclib_set_selector(runtime.client, OnSearchCandidates, &plugin);
 
-    uint64_t last_serial = ~0ull;
     double last_wall_time = MonotonicSeconds();
     int64_t last_position = -1;
 
@@ -575,9 +624,11 @@ int RunOverlay() {
                 g_stop = 1;
             } else if (command == "reload") {
                 plugin.SetPreset(active_preset);
+                apply_runtime_setup();
             } else if (command.rfind("preset ", 0) == 0) {
                 active_preset = command.substr(7);
                 plugin.SetPreset(active_preset);
+                apply_runtime_setup();
             } else if (command.rfind("offset ", 0) == 0) {
                 lyric_offset_us = static_cast<int64_t>(std::atof(command.substr(7).c_str()) * 1e6);
                 std::fprintf(stderr, "raylyrics: lyric offset %+.3fs\n",
@@ -695,6 +746,12 @@ int RunOverlay() {
         ClearBackground(BLANK);
         if (!hidden) plugin.RunFrame(ctx);
         EndDrawing();
+
+        // Hot reload may have changed fps/font/colors.
+        if (plugin.reload_serial() != last_reload_serial) {
+            last_reload_serial = plugin.reload_serial();
+            apply_runtime_setup();
+        }
     }
 
     if (runtime.doc != nullptr) lrc_free(runtime.doc);

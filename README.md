@@ -33,7 +33,8 @@ cmake --build build
 
 - `~/.config/raylyrics/config.lua` — 见 `config.example.lua`；可选 `on_select` / `on_metadata` /
   `on_search` 钩子来自定义选播放器与歌词匹配。
-- `~/.config/raylyrics/presets/<name>.lua` — 歌词样式，示例见 `presets/`。
+- `~/.config/raylyrics/presets/<name>.lua` — 歌词样式，示例见 `presets/`。preset 也能声明
+  自己的 viewport（含全屏）、layer-shell 几何、fps、字体与颜色，覆盖 config。
 - 在线歌词缓存在 `$XDG_CACHE_HOME/raylyrics/lyrics`，用 `raylyrics cache list|prune|clear|remove|dir` 管理。
 
 详细设计见 `docs/PLAN.md`。

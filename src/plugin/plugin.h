@@ -62,6 +62,51 @@ struct PluginSearchResult {
     bool has_plain = false;
 };
 
+// Declarative settings a preset may return alongside its hooks. Only the fields
+// the preset actually declares are applied; everything else keeps the config
+// value. The bootstrap fields (viewport/layer/anchor/margin/output/namespace/
+// exclusive_zone/keyboard) must be read before InitWindow() and are ignored on
+// hot reload; fps/font/colors can be applied at runtime.
+struct PresetSetup {
+    bool has_viewport = false;
+    int viewport_width = 0;   // <= 0 means "full output"
+    int viewport_height = 0;
+
+    bool has_layer = false;
+    int layer = 3;            // matches RL_WL_LAYER_* (background..overlay)
+
+    bool has_anchor = false;
+    std::string anchor;       // "bottom", "top-left", "fullscreen", ...
+
+    bool has_margin = false;
+    int margin_top = 0;
+    int margin_right = 0;
+    int margin_bottom = 0;
+    int margin_left = 0;
+
+    bool has_output = false;
+    std::string output;
+
+    bool has_namespace = false;
+    std::string layer_namespace;
+
+    bool has_exclusive_zone = false;
+    int exclusive_zone = -1;
+
+    bool has_keyboard = false;
+    bool keyboard = false;
+
+    bool has_fps = false;
+    int fps = 60;
+
+    bool has_font = false;
+    TextStyle font;
+
+    bool has_colors = false;
+    float colors_current[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    float colors_next[4] = {1.0f, 1.0f, 1.0f, 0.3f};
+};
+
 // Loads and runs a Lua preset. Owns the TextRenderer so fonts survive across
 // line changes (PrepareText rebuilds them per song).
 class PluginHost {
@@ -79,6 +124,13 @@ public:
     // Evaluate the config file inside the preset Lua state so presets can read
     // the global `config` table (e.g. config.preset_params).
     void LoadConfig(const std::string& path);
+
+    // What the current preset declared in its returned table. Valid after
+    // SetPreset().
+    const PresetSetup& setup() const;
+
+    // Bumped on every hot reload, so callers can re-apply setup.
+    uint64_t reload_serial() const;
 
     // config.on_select(players) -> bus name / 1-based index / nil.
     // Returns "" when there is no hook or it made no choice.

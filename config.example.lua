@@ -1,5 +1,7 @@
 -- raylyrics configuration
 -- Copy to ~/.config/raylyrics/config.lua and edit.
+-- These are defaults: a preset may override overlay geometry, font and colors
+-- via its own declaration (see presets/README.md).
 config = {
   overlay = {
     anchor = "bottom",      -- "bottom" | "top"

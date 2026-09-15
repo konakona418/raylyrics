@@ -21,11 +21,31 @@ enum {
     RL_WL_ANCHOR_RIGHT = 8,
 };
 
+/* Layer for rl_wl_set_layer(). */
+enum {
+    RL_WL_LAYER_BACKGROUND = 0,
+    RL_WL_LAYER_BOTTOM = 1,
+    RL_WL_LAYER_TOP = 2,
+    RL_WL_LAYER_OVERLAY = 3,
+};
+
 /* Configure the layer-shell anchor/margins. Must be called before InitWindow()
  * (i.e. before rl_wl_create). Unset values default to bottom|left|right and a
  * 48px bottom margin. */
 void rl_wl_set_geometry(int anchor, int margin_top, int margin_right, int margin_bottom,
                         int margin_left);
+
+/* Requested surface size in logical pixels. A non-positive value means "the
+ * full output" and is resolved once the output geometry is known. Must be
+ * called before rl_wl_create; overrides the size passed to rl_wl_create(). */
+void rl_wl_set_size(int width, int height);
+
+/* Layer-shell placement. Must be called before rl_wl_create. Defaults: overlay
+ * layer, namespace "raylyrics", exclusive zone -1, no keyboard. */
+void rl_wl_set_layer(int layer);
+void rl_wl_set_namespace(const char *name);
+void rl_wl_set_exclusive_zone(int zone);
+void rl_wl_set_keyboard(int interactive);
 
 /* Select the output to place the overlay on, by wl_output name (e.g. "DP-1").
  * NULL/empty lets the compositor choose. Must be called before rl_wl_create. */

@@ -67,6 +67,17 @@ static int g_margin_bottom = 48;
 static int g_margin_left = 0;
 static char g_output_name[64] = {0};
 
+/* Layer-shell placement, also set before rl_wl_create(). */
+static int g_layer = RL_WL_LAYER_OVERLAY;
+static char g_namespace[64] = "raylyrics";
+static int g_exclusive_zone = -1;
+static int g_keyboard = 0;
+
+/* Explicit size request; non-positive means "full output". */
+static int g_size_set = 0;
+static int g_requested_width = 0;
+static int g_requested_height = 0;
+
 void rl_wl_set_geometry(int anchor, int margin_top, int margin_right, int margin_bottom,
                         int margin_left) {
     g_anchor = anchor;
@@ -75,6 +86,29 @@ void rl_wl_set_geometry(int anchor, int margin_top, int margin_right, int margin
     g_margin_bottom = margin_bottom;
     g_margin_left = margin_left;
 }
+
+void rl_wl_set_size(int width, int height) {
+    g_size_set = 1;
+    g_requested_width = width;
+    g_requested_height = height;
+}
+
+void rl_wl_set_layer(int layer) {
+    if (layer < RL_WL_LAYER_BACKGROUND || layer > RL_WL_LAYER_OVERLAY) return;
+    g_layer = layer;
+}
+
+void rl_wl_set_namespace(const char *name) {
+    if (name == NULL) {
+        g_namespace[0] = '\0';
+        return;
+    }
+    snprintf(g_namespace, sizeof(g_namespace), "%s", name);
+}
+
+void rl_wl_set_exclusive_zone(int zone) { g_exclusive_zone = zone; }
+
+void rl_wl_set_keyboard(int interactive) { g_keyboard = interactive ? 1 : 0; }
 
 void rl_wl_set_output(const char *name) {
     if (name == NULL) {
@@ -295,12 +329,16 @@ static int init_egl(struct rl_wl_state *state) {
 /* public API                                                         */
 /* ------------------------------------------------------------------ */
 
+static void resolve_output_size(const struct rl_wl_state *state, int *width, int *height);
+
 rl_wl_state *rl_wl_create(int width, int height) {
     struct rl_wl_state *state = calloc(1, sizeof(*state));
     if (!state) return NULL;
 
-    state->width = width > 0 ? width : 1;
-    state->height = height > 0 ? height : 1;
+    const int requested_width = g_size_set ? g_requested_width : width;
+    const int requested_height = g_size_set ? g_requested_height : height;
+    state->width = requested_width > 0 ? requested_width : 1;
+    state->height = requested_height > 0 ? requested_height : 1;
 
     state->display = wl_display_connect(NULL);
     if (!state->display) {
@@ -336,6 +374,16 @@ rl_wl_state *rl_wl_create(int width, int height) {
         }
     }
 
+    // A non-positive request means "full output"; resolve it now that the
+    // output geometry is known.
+    if (requested_width <= 0 || requested_height <= 0) {
+        int output_width = 0;
+        int output_height = 0;
+        resolve_output_size(state, &output_width, &output_height);
+        if (requested_width <= 0 && output_width > 0) state->width = output_width;
+        if (requested_height <= 0 && output_height > 0) state->height = output_height;
+    }
+
     state->surface = wl_compositor_create_surface(state->compositor);
     wl_surface_add_listener(state->surface, &surface_listener, state);
     wl_surface_set_buffer_scale(state->surface, 1);
@@ -345,7 +393,7 @@ rl_wl_state *rl_wl_create(int width, int height) {
 
     state->layer_surface = zwlr_layer_shell_v1_get_layer_surface(
         state->layer_shell, state->surface, state->selected_output,
-        ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "raylyrics");
+        (enum zwlr_layer_shell_v1_layer)g_layer, g_namespace);
     zwlr_layer_surface_v1_add_listener(state->layer_surface, &layer_surface_listener, state);
 
     zwlr_layer_surface_v1_set_size(state->layer_surface, (uint32_t)state->width, (uint32_t)state->height);
@@ -353,9 +401,11 @@ rl_wl_state *rl_wl_create(int width, int height) {
     // NOTE: wlr-layer-shell set_margin() order is (top, right, bottom, left)
     zwlr_layer_surface_v1_set_margin(state->layer_surface, g_margin_top, g_margin_right,
                                      g_margin_bottom, g_margin_left);
-    zwlr_layer_surface_v1_set_exclusive_zone(state->layer_surface, -1);
-    zwlr_layer_surface_v1_set_keyboard_interactivity(state->layer_surface,
-                                                     ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
+    zwlr_layer_surface_v1_set_exclusive_zone(state->layer_surface, g_exclusive_zone);
+    zwlr_layer_surface_v1_set_keyboard_interactivity(
+        state->layer_surface,
+        g_keyboard ? ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE
+                   : ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
 
     wl_surface_commit(state->surface);
 
@@ -397,6 +447,28 @@ static const struct rl_wl_output *active_output(const struct rl_wl_state *state)
     }
     if (state->output_count > 0) return &state->outputs[0];
     return NULL;
+}
+
+/* Logical size of the output the surface will land on: the explicitly selected
+ * one, else the first. Returns 0 when unknown. */
+static void resolve_output_size(const struct rl_wl_state *state, int *width, int *height) {
+    const struct rl_wl_output *output = NULL;
+    if (state->selected_output != NULL) {
+        for (int i = 0; i < state->output_count; i++) {
+            if (state->outputs[i].proxy == state->selected_output) {
+                output = &state->outputs[i];
+                break;
+            }
+        }
+    }
+    if (output == NULL && state->output_count > 0) output = &state->outputs[0];
+
+    *width = 0;
+    *height = 0;
+    if (output == NULL) return;
+    const int scale = output->scale > 0 ? output->scale : 1;
+    if (output->mode_width > 0) *width = output->mode_width / scale;
+    if (output->mode_height > 0) *height = output->mode_height / scale;
 }
 
 int rl_wl_monitor_width(const rl_wl_state *state) {
