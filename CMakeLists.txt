@@ -117,3 +117,16 @@ target_link_libraries(raylyrics PRIVATE
   dl
   pthread
 )
+
+# --- install ---------------------------------------------------------------
+include(GNUInstallDirs)
+
+# Where the system-wide presets live, searched after ~/.config/raylyrics/presets.
+target_compile_definitions(raylyrics PRIVATE
+  RAYLYRICS_DATADIR="${CMAKE_INSTALL_FULL_DATADIR}/raylyrics"
+)
+
+install(TARGETS raylyrics RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES config.example.lua DESTINATION ${CMAKE_INSTALL_DATADIR}/raylyrics)
+install(DIRECTORY presets/ DESTINATION ${CMAKE_INSTALL_DATADIR}/raylyrics/presets
+        PATTERN "README.md" EXCLUDE)

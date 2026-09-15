@@ -79,6 +79,22 @@ std::string ConfigDir() {
     return std::string(home != nullptr ? home : ".") + "/.config/raylyrics";
 }
 
+// System-wide data dir (presets shipped by the package), fixed at configure time.
+std::string DataDir() {
+#ifdef RAYLYRICS_DATADIR
+    return RAYLYRICS_DATADIR;
+#else
+    return "/usr/local/share/raylyrics";
+#endif
+}
+
+std::string PresetPath(const std::string& name) {
+    const std::string user = ConfigDir() + "/presets/" + name + ".lua";
+    struct stat info;
+    if (stat(user.c_str(), &info) == 0) return user;
+    return DataDir() + "/presets/" + name + ".lua";
+}
+
 Color ToColor(const float rgba[4]) {
     return Color{static_cast<unsigned char>(rgba[0] * 255.0f),
                  static_cast<unsigned char>(rgba[1] * 255.0f),
@@ -232,6 +248,7 @@ struct PluginHost::Impl {
         // Let presets share code with require("common").
         sol::object current_path = lua["package"]["path"];
         std::string package_path = ConfigDir() + "/presets/?.lua";
+        package_path += ";" + DataDir() + "/presets/?.lua";
         if (current_path.is<std::string>()) {
             package_path += ";" + current_path.as<std::string>();
         }
@@ -1146,7 +1163,7 @@ void PluginHost::SetPreset(const std::string& name_or_path) {
 
     std::string path = name_or_path;
     if (path.find('/') == std::string::npos) {
-        path = ConfigDir() + "/presets/" + path + ".lua";
+        path = PresetPath(path);
     }
 
     struct stat info;

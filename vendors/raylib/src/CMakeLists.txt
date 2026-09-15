@@ -157,8 +157,11 @@ if (PLATFORM STREQUAL "Desktop")
 endif()
 
 # Includes information on how the library will be installed on the system
-# when cmake --install is run
-include(InstallConfigurations)
+# when cmake --install is run. Skipped when raylib is consumed via
+# add_subdirectory() (as raylyrics does), so only the app is installed.
+if (PROJECT_IS_TOP_LEVEL)
+    include(InstallConfigurations)
+endif ()
 
 # Print the flags for the user
 if (DEFINED CMAKE_BUILD_TYPE)

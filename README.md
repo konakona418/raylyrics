@@ -29,6 +29,8 @@ cmake --build build
 ./build/raylyrics ctl reload | quit
 ```
 
+Arch Linux 本地打包（PKGBUILD + 脚本）见 `packaging/README.md`。
+
 ## 配置
 
 - `~/.config/raylyrics/config.lua` — 见 `config.example.lua`；可选 `on_select` / `on_metadata` /

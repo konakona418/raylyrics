@@ -1,0 +1,34 @@
+# Local PKGBUILD: expects raylyrics-$pkgver.tar.gz next to this file. Build it
+# with ./make-local-package.sh, which tars the repository working tree first.
+#
+# The repository ships no LICENSE file, hence license=custom.
+
+pkgname=raylyrics
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Wayland layer-shell desktop lyrics overlay driven by MPRIS"
+arch=('x86_64' 'aarch64')
+license=('custom')
+depends=(
+  'wayland'
+  'libglvnd'
+  'fontconfig'
+  'glib2'
+  'libsoup3'
+  'cjson'
+  'lua54'
+)
+makedepends=('cmake' 'ninja' 'pkgconf' 'wayland-protocols')
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cmake -S "$pkgname-$pkgver" -B build -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr
+  cmake --build build
+}
+
+package() {
+  DESTDIR="$pkgdir" cmake --install build
+}
