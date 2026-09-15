@@ -2,3 +2,8 @@
 /.cache/
 /install/
 compile_commands.json
+
+# Local design / agent notes, not part of the repo.
+/docs/
+/AGENTS.md
+/CLAUDE.md
