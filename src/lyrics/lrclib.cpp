@@ -6,9 +6,12 @@
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <vector>
 
 struct lrclib_client {
     SoupSession* session;
+    lrclib_selector selector = nullptr;
+    void* selector_data = nullptr;
 };
 
 namespace {
@@ -29,8 +32,11 @@ struct RequestContext {
     void* user_data = nullptr;
     std::string artist;
     std::string title;
+    std::string album;
     double duration = 0.0;
     bool is_search = false;
+    lrclib_selector selector = nullptr;
+    void* selector_data = nullptr;
 };
 
 SoupMessage* NewMessage(const std::string& url) {
@@ -90,6 +96,72 @@ void Finish(RequestContext* context, lrclib_result* out, std::string* synced, st
     delete context;
 }
 
+// Built-in /api/search heuristic: the synced entry whose duration is closest
+// to the query, else the first entry that has plain lyrics.
+int BuiltinSearchChoice(const std::vector<cJSON*>& items, double query_duration) {
+    int best = -1;
+    double best_delta = 1e18;
+    for (size_t i = 0; i < items.size(); i++) {
+        const cJSON* synced_item = cJSON_GetObjectItemCaseSensitive(items[i], "syncedLyrics");
+        if (!cJSON_IsString(synced_item) || synced_item->valuestring == nullptr) continue;
+        double duration = 0.0;
+        const cJSON* duration_item = cJSON_GetObjectItemCaseSensitive(items[i], "duration");
+        if (cJSON_IsNumber(duration_item)) duration = duration_item->valuedouble;
+        const double delta = (query_duration > 0.0) ? std::fabs(duration - query_duration) : 0.0;
+        if (best < 0 || delta < best_delta) {
+            best = static_cast<int>(i);
+            best_delta = delta;
+        }
+    }
+    if (best >= 0) return best;
+
+    for (size_t i = 0; i < items.size(); i++) {
+        const cJSON* plain_item = cJSON_GetObjectItemCaseSensitive(items[i], "plainLyrics");
+        if (cJSON_IsString(plain_item) && plain_item->valuestring != nullptr) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+// Offers every /api/search entry to the selector (if installed) and returns the
+// chosen index, falling back to BuiltinSearchChoice.
+int ChooseSearchResult(const RequestContext* context, const std::vector<cJSON*>& items) {
+    if (items.empty()) return -1;
+
+    std::vector<std::string> tracks(items.size());
+    std::vector<std::string> artists(items.size());
+    std::vector<std::string> albums(items.size());
+    std::vector<lrclib_candidate> candidates(items.size());
+
+    for (size_t i = 0; i < items.size(); i++) {
+        const cJSON* track = cJSON_GetObjectItemCaseSensitive(items[i], "trackName");
+        if (cJSON_IsString(track) && track->valuestring != nullptr) tracks[i] = track->valuestring;
+        const cJSON* artist = cJSON_GetObjectItemCaseSensitive(items[i], "artistName");
+        if (cJSON_IsString(artist) && artist->valuestring != nullptr) artists[i] = artist->valuestring;
+        const cJSON* album = cJSON_GetObjectItemCaseSensitive(items[i], "albumName");
+        if (cJSON_IsString(album) && album->valuestring != nullptr) albums[i] = album->valuestring;
+        const cJSON* duration = cJSON_GetObjectItemCaseSensitive(items[i], "duration");
+        candidates[i].duration = cJSON_IsNumber(duration) ? duration->valuedouble : 0.0;
+        const cJSON* synced = cJSON_GetObjectItemCaseSensitive(items[i], "syncedLyrics");
+        candidates[i].has_synced = cJSON_IsString(synced) && synced->valuestring != nullptr;
+        const cJSON* plain = cJSON_GetObjectItemCaseSensitive(items[i], "plainLyrics");
+        candidates[i].has_plain = cJSON_IsString(plain) && plain->valuestring != nullptr;
+        candidates[i].track_name = tracks[i].c_str();
+        candidates[i].artist_name = artists[i].c_str();
+        candidates[i].album_name = albums[i].c_str();
+    }
+
+    if (context->selector != nullptr) {
+        const int chosen = context->selector(
+            context->selector_data, context->artist.c_str(), context->title.c_str(),
+            context->album.c_str(), context->duration, candidates.data(),
+            static_cast<int>(candidates.size()));
+        if (chosen >= 0 && chosen < static_cast<int>(items.size())) return chosen;
+    }
+    return BuiltinSearchChoice(items, context->duration);
+}
+
 void OnResponse(GObject* source, GAsyncResult* result, gpointer user_data) {
     auto* context = static_cast<RequestContext*>(user_data);
     SoupSession* session = SOUP_SESSION(source);
@@ -143,33 +215,14 @@ void OnResponse(GObject* source, GAsyncResult* result, gpointer user_data) {
 
     if (root != nullptr) {
         if (context->is_search) {
-            // Prefer a synced entry whose duration is closest to the query.
-            cJSON* best = nullptr;
-            double best_delta = 1e18;
+            std::vector<cJSON*> items;
             cJSON* item = nullptr;
-            cJSON_ArrayForEach(item, root) {
-                const cJSON* synced_item = cJSON_GetObjectItemCaseSensitive(item, "syncedLyrics");
-                if (!cJSON_IsString(synced_item) || synced_item->valuestring == nullptr) continue;
-                double duration = 0.0;
-                const cJSON* duration_item = cJSON_GetObjectItemCaseSensitive(item, "duration");
-                if (cJSON_IsNumber(duration_item)) duration = duration_item->valuedouble;
-                const double delta =
-                    (context->duration > 0.0) ? std::fabs(duration - context->duration) : 0.0;
-                if (best == nullptr || delta < best_delta) {
-                    best = item;
-                    best_delta = delta;
-                }
+            cJSON_ArrayForEach(item, root) items.push_back(item);
+            const int chosen = ChooseSearchResult(context, items);
+            if (chosen >= 0) {
+                ExtractFields(items[static_cast<size_t>(chosen)], &out, &synced, &plain, &track,
+                              &artist, &album);
             }
-            if (best == nullptr) {
-                cJSON_ArrayForEach(item, root) {
-                    const cJSON* plain_item = cJSON_GetObjectItemCaseSensitive(item, "plainLyrics");
-                    if (cJSON_IsString(plain_item) && plain_item->valuestring != nullptr) {
-                        best = item;
-                        break;
-                    }
-                }
-            }
-            if (best != nullptr) ExtractFields(best, &out, &synced, &plain, &track, &artist, &album);
         } else {
             ExtractFields(root, &out, &synced, &plain, &track, &artist, &album);
         }
@@ -215,8 +268,24 @@ extern "C" void lrclib_get(lrclib_client* client, const char* artist, const char
         return;
     }
 
-    auto* context =
-        new RequestContext{message, callback, user_data, artist_str, title_str, duration_seconds, false};
+    auto* context = new RequestContext{};
+    context->message = message;
+    context->callback = callback;
+    context->user_data = user_data;
+    context->artist = artist_str;
+    context->title = title_str;
+    context->album = album_str;
+    context->duration = duration_seconds;
+    context->is_search = false;
+    context->selector = client->selector;
+    context->selector_data = client->selector_data;
     soup_session_send_and_read_async(client->session, message, G_PRIORITY_DEFAULT, nullptr, OnResponse,
                                      context);
+}
+
+extern "C" void lrclib_set_selector(lrclib_client* client, lrclib_selector selector,
+                                    void* user_data) {
+    if (client == nullptr) return;
+    client->selector = selector;
+    client->selector_data = user_data;
 }

@@ -899,6 +899,129 @@ void PluginHost::LoadConfig(const std::string& path) {
     impl_->lua.safe_script_file(path, sol::script_pass_on_error);
 }
 
+namespace {
+
+// Returns the config hook `name`, or an invalid object when absent.
+sol::object ConfigHook(sol::state& lua, const char* name) {
+    sol::object config = lua["config"];
+    if (!config.is<sol::table>()) return sol::nil;
+    return config.as<sol::table>()[name];
+}
+
+}  // namespace
+
+std::string PluginHost::SelectPlayer(const std::vector<PluginPlayer>& players) {
+    Impl& impl = *impl_;
+    sol::object hook = ConfigHook(impl.lua, "on_select");
+    if (!hook.is<sol::function>()) return {};
+
+    sol::table list = impl.lua.create_table();
+    for (std::size_t i = 0; i < players.size(); i++) {
+        const PluginPlayer& player = players[i];
+        sol::table entry = impl.lua.create_table();
+        entry["name"] = player.name;
+        entry["identity"] = player.identity;
+        entry["title"] = player.title;
+        entry["artist"] = player.artist;
+        entry["album"] = player.album;
+        entry["playing"] = player.playing;
+        entry["position_us"] = player.position_us;
+        entry["length_us"] = player.length_us;
+        list[i + 1] = entry;
+    }
+
+    sol::protected_function function = hook.as<sol::protected_function>();
+    sol::protected_function_result result = function(list);
+    if (!result.valid()) {
+        impl.LogError(result);
+        return {};
+    }
+
+    sol::object value = result.get<sol::object>();
+    if (value.is<std::string>()) return value.as<std::string>();
+    if (value.is<int>()) {
+        const int index = value.as<int>();
+        if (index >= 1 && index <= static_cast<int>(players.size())) {
+            return players[static_cast<std::size_t>(index - 1)].name;
+        }
+    }
+    return {};
+}
+
+void PluginHost::NormalizeMetadata(PluginMetadata& meta) {
+    Impl& impl = *impl_;
+    sol::object hook = ConfigHook(impl.lua, "on_metadata");
+    if (!hook.is<sol::function>()) return;
+
+    sol::table table = impl.lua.create_table();
+    table["artist"] = meta.artist;
+    table["title"] = meta.title;
+    table["album"] = meta.album;
+    table["duration"] = static_cast<double>(meta.duration_us) / 1e6;
+    table["player"] = meta.player;
+
+    sol::protected_function function = hook.as<sol::protected_function>();
+    sol::protected_function_result result = function(table);
+    if (!result.valid()) {
+        impl.LogError(result);
+        return;
+    }
+
+    sol::object value = result.get<sol::object>();
+    if (!value.is<sol::table>()) return;
+    sol::table out = value.as<sol::table>();
+    sol::object artist = out["artist"];
+    sol::object title = out["title"];
+    sol::object album = out["album"];
+    sol::object duration = out["duration"];
+    if (artist.is<std::string>()) meta.artist = artist.as<std::string>();
+    if (title.is<std::string>()) meta.title = title.as<std::string>();
+    if (album.is<std::string>()) meta.album = album.as<std::string>();
+    if (duration.is<double>() || duration.is<float>() || duration.is<int>()) {
+        meta.duration_us = static_cast<int64_t>(duration.as<double>() * 1e6);
+    }
+}
+
+int PluginHost::SelectSearchResult(const PluginMetadata& query,
+                                   const std::vector<PluginSearchResult>& results) {
+    Impl& impl = *impl_;
+    sol::object hook = ConfigHook(impl.lua, "on_search");
+    if (!hook.is<sol::function>()) return -1;
+
+    sol::table query_table = impl.lua.create_table();
+    query_table["artist"] = query.artist;
+    query_table["title"] = query.title;
+    query_table["album"] = query.album;
+    query_table["duration"] = static_cast<double>(query.duration_us) / 1e6;
+
+    sol::table list = impl.lua.create_table();
+    for (std::size_t i = 0; i < results.size(); i++) {
+        const PluginSearchResult& candidate = results[i];
+        sol::table entry = impl.lua.create_table();
+        entry["track_name"] = candidate.track_name;
+        entry["artist_name"] = candidate.artist_name;
+        entry["album_name"] = candidate.album_name;
+        entry["duration"] = candidate.duration;
+        entry["has_synced"] = candidate.has_synced;
+        entry["has_plain"] = candidate.has_plain;
+        list[i + 1] = entry;
+    }
+
+    sol::protected_function function = hook.as<sol::protected_function>();
+    sol::protected_function_result result = function(query_table, list);
+    if (!result.valid()) {
+        impl.LogError(result);
+        return -1;
+    }
+
+    sol::object value = result.get<sol::object>();
+    if (value.is<int>()) {
+        const int index = value.as<int>();
+        if (index >= 1 && index <= static_cast<int>(results.size())) return index - 1;
+    }
+    return -1;
+}
+
 void PluginHost::SetPreset(const std::string& name_or_path) {
     if (name_or_path.empty() || name_or_path == "default") {
         impl_->preset_path.clear();

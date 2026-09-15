@@ -57,6 +57,20 @@ int RunMprisDump() {
 
     while (!g_stop) {
         media_poll(backend);
+
+        if (media_selection_dirty(backend)) {
+            media_set_active(backend, nullptr);
+            const int player_count = media_player_count(backend);
+            std::printf("players (%d):\n", player_count);
+            for (int i = 0; i < player_count; i++) {
+                const media_player_info* info = media_player_at(backend, i);
+                if (info == nullptr) continue;
+                std::printf("  %s  [%s]  %s\n", info->name, info->playing ? "playing" : "paused",
+                            info->identity != nullptr ? info->identity : "?");
+            }
+            std::fflush(stdout);
+        }
+
         const media_state* state = media_get_state(backend);
 
         const bool track_changed = state->generation != last_generation;
@@ -232,10 +246,11 @@ std::string SanitizeFileName(const std::string& value) {
     return out;
 }
 
-lrc_doc* TryLocalLyrics(const media_state* state, const std::string& lyrics_root) {
+lrc_doc* TryLocalLyrics(const std::string& url, std::string artist, std::string title,
+                        const std::string& lyrics_root) {
     // 1. Sibling .lrc next to a local file:// URL.
-    if (state->url != nullptr && std::strncmp(state->url, "file://", 7) == 0) {
-        std::string path = state->url + 7;
+    if (!url.empty() && url.rfind("file://", 0) == 0) {
+        std::string path = url.substr(7);
         const size_t dot = path.rfind('.');
         if (dot != std::string::npos) path = path.substr(0, dot) + ".lrc";
         bool ok = false;
@@ -247,8 +262,6 @@ lrc_doc* TryLocalLyrics(const media_state* state, const std::string& lyrics_root
     }
 
     // 2. Configured lyrics root: "Artist - Title.lrc".
-    std::string artist = state->artist != nullptr ? state->artist : "";
-    std::string title = state->title != nullptr ? state->title : "";
     if (artist.empty()) SplitCombinedTitle(title, &title, &artist);
 
     const std::string path = lyrics_root + "/" + SanitizeFileName(artist) + " - " +
@@ -364,6 +377,32 @@ std::string BuildSongText(const lrc_doc* doc) {
     return out;
 }
 
+// Bridges the LRCLIB /api/search candidate list to config.on_search.
+int OnSearchCandidates(void* user_data, const char* artist, const char* title, const char* album,
+                       double query_duration, const lrclib_candidate* candidates, int count) {
+    auto* plugin = static_cast<raylyrics::PluginHost*>(user_data);
+    if (plugin == nullptr || count <= 0) return -1;
+
+    raylyrics::PluginMetadata query;
+    query.artist = artist != nullptr ? artist : "";
+    query.title = title != nullptr ? title : "";
+    query.album = album != nullptr ? album : "";
+    query.duration_us = static_cast<int64_t>(query_duration * 1e6);
+
+    std::vector<raylyrics::PluginSearchResult> results(static_cast<size_t>(count));
+    for (int i = 0; i < count; i++) {
+        const lrclib_candidate& candidate = candidates[i];
+        raylyrics::PluginSearchResult& result = results[static_cast<size_t>(i)];
+        result.track_name = candidate.track_name != nullptr ? candidate.track_name : "";
+        result.artist_name = candidate.artist_name != nullptr ? candidate.artist_name : "";
+        result.album_name = candidate.album_name != nullptr ? candidate.album_name : "";
+        result.duration = candidate.duration;
+        result.has_synced = candidate.has_synced != 0;
+        result.has_plain = candidate.has_plain != 0;
+    }
+    return plugin->SelectSearchResult(query, results);
+}
+
 int RunOverlay() {
     const raylyrics::Config config = raylyrics::Config::LoadDefault();
 
@@ -416,6 +455,7 @@ int RunOverlay() {
     media_backend* media = media_mpris_create();
     LyricsRuntime runtime;
     runtime.client = lrclib_client_new();
+    lrclib_set_selector(runtime.client, OnSearchCandidates, &plugin);
 
     uint64_t last_serial = ~0ull;
     double last_wall_time = MonotonicSeconds();
@@ -423,6 +463,29 @@ int RunOverlay() {
 
     while (!g_stop && !WindowShouldClose()) {
         media_poll(media);  // also drains the GLib context, delivering LRCLIB callbacks
+
+        if (media_selection_dirty(media)) {
+            std::vector<raylyrics::PluginPlayer> players;
+            const int player_count = media_player_count(media);
+            players.reserve(static_cast<size_t>(player_count));
+            for (int i = 0; i < player_count; i++) {
+                const media_player_info* info = media_player_at(media, i);
+                if (info == nullptr) continue;
+                raylyrics::PluginPlayer player;
+                player.name = info->name != nullptr ? info->name : "";
+                player.identity = info->identity != nullptr ? info->identity : "";
+                player.title = info->title != nullptr ? info->title : "";
+                player.artist = info->artist != nullptr ? info->artist : "";
+                player.album = info->album != nullptr ? info->album : "";
+                player.playing = info->playing;
+                player.position_us = info->position_us;
+                player.length_us = info->length_us;
+                players.push_back(std::move(player));
+            }
+            const std::string chosen = plugin.SelectPlayer(players);
+            media_set_active(media, chosen.empty() ? nullptr : chosen.c_str());
+        }
+
         const media_state* state = media_get_state(media);
 
         const std::string command = control.Poll();
@@ -457,21 +520,29 @@ int RunOverlay() {
                 runtime.doc_serial++;
             }
 
-            if (state->valid && state->title != nullptr && state->title[0] != '\0') {
-                runtime.doc = TryLocalLyrics(state, config.lyrics_root);
+            raylyrics::PluginMetadata meta;
+            meta.artist = state->artist != nullptr ? state->artist : "";
+            meta.title = state->title != nullptr ? state->title : "";
+            meta.album = state->album != nullptr ? state->album : "";
+            meta.duration_us = state->length_us;
+            meta.player = state->player != nullptr ? state->player : "";
+            plugin.NormalizeMetadata(meta);
+
+            if (state->valid && !meta.title.empty()) {
+                const std::string url = state->url != nullptr ? state->url : "";
+                runtime.doc = TryLocalLyrics(url, meta.artist, meta.title, config.lyrics_root);
                 if (runtime.doc != nullptr) {
                     std::fprintf(stderr, "raylyrics: local lyrics for %s (%zu lines)\n",
-                                 state->title, lrc_line_count(runtime.doc));
+                                 meta.title.c_str(), lrc_line_count(runtime.doc));
                     runtime.doc_serial++;
                 } else {
-                    std::string artist = state->artist != nullptr ? state->artist : "";
-                    std::string title = state->title != nullptr ? state->title : "";
+                    std::string artist = meta.artist;
+                    std::string title = meta.title;
                     if (artist.empty()) SplitCombinedTitle(title, &title, &artist);
                     runtime.fetching = true;
                     auto* request = new RemoteRequest{&runtime, state->generation};
-                    lrclib_get(runtime.client, artist.c_str(), title.c_str(),
-                               state->album, static_cast<double>(state->length_us) / 1e6,
-                               OnRemoteLyrics, request);
+                    lrclib_get(runtime.client, artist.c_str(), title.c_str(), meta.album.c_str(),
+                               static_cast<double>(meta.duration_us) / 1e6, OnRemoteLyrics, request);
                 }
             }
         }

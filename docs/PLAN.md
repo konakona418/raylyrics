@@ -154,13 +154,20 @@ pos(t) = mpris_position_us + (monotonic_now - position_ts) * rate
 
 重同步时机：`PlaybackStatus` 变化、`Seeked`、`mpris:trackid` 变化、metadata 更新。
 
-### 7.4 MPRIS
+### 7.4 MPRIS / 多播放器
 
-- bus name：`org.mpris.MediaPlayer2.firefox.instance_<pid>`；忽略 `playerctld`。
-- object：`/org/mpris/MediaPlayer2`，iface `org.mpris.MediaPlayer2.Player`。
-- 流程：`GetAll` → 订阅 `PropertiesChanged`(org.freedesktop.DBus.Properties) + `Seeked` + `NameOwnerChanged`。
+- bus name：`org.mpris.MediaPlayer2.<app>`；忽略 `playerctld`。
+- object：`/org/mpris/MediaPlayer2`，iface `org.mpris.MediaPlayer2.Player`（Identity 在 `org.mpris.MediaPlayer2`）。
+- **多播放器**：backend 持有所有播放器，各自 `GetAll` + 订阅 `PropertiesChanged`/`Seeked`；
+  `NameOwnerChanged`（namespace 匹配）增删。`identity` 取根接口的 `Identity`。
+- 选择：`media_selection_dirty()`（播放器集合或状态/元数据变化）时，main 把播放器列表交给
+  `config.on_select`；无钩子/无选择则用内置策略（正在播放的当前播放器 → 正在播放的 Firefox
+  → 当前 → 任意 Firefox → 第一个）。`media_set_active()` 落地选择。
+- 只有活动播放器会同步采样 `Position`（其余靠 `PropertiesChanged` 更新状态）。
 - 字段：`xesam:title`、`xesam:artist`(as)、`xesam:album`、`mpris:trackid`(o)、`mpris:length`(x)、`PlaybackStatus`(s)、`Position`(x)、`Rate`(d)。
-- Firefox 注意：仅在有媒体时出现；`Position` 稀疏；`xesam:url` 可能是 `file://` 或 `http(s)://`。
+- Firefox 注意：仅在有媒体时出现；`Position` 稀疏；`xesam:url` 可能是 `file://` 或 `http(s)://`；
+  `mpris:trackid` 跨曲固定，换歌靠 metadata 签名（title/artist/album/length）判断。
+- `state.generation` 由 backend 维护：活动播放器切换或曲目签名变化时自增，驱动换歌重载。
 
 ### 7.5 LRC
 
@@ -267,6 +274,39 @@ raylyrics ctl quit
 
 `offset` 直接加到媒体 position 上再算当前行，所以不用改 LRC 文件。
 
+### 7.10 逻辑钩子（config.lua）
+
+选播放器与歌词匹配的策略放在 `config.lua`（只加载一次，不随视觉 preset 热重载）。
+实现：`PluginHost::LoadConfig()` 在 preset 的 Lua state 里执行 `config.lua`，钩子以全局 `config` 的函数形式存在；
+`main` 负责编排，media/lrclib 保持无 Lua。
+
+```lua
+-- 选活动播放器。返回 bus name 或 1-based 索引；nil 用内置策略。
+config.on_select = function(players)  -- players[i] = { name, identity, title, artist, album, playing, position_us, length_us }
+  for i, p in ipairs(players) do
+    if p.playing and p.identity == "Spotify" then return i end
+  end
+end
+
+-- 匹配前归一化 metadata（如拆分 "Artist • Title"）。
+config.on_metadata = function(m)  -- { artist, title, album, duration, player }
+  local artist, title = m.title:match("^(.-) • (.*)$")
+  if artist then return { artist = artist, title = title } end
+end
+
+-- 从 LRCLIB /api/search 候选中挑选（1-based 索引；nil 用内置启发式）。
+config.on_search = function(query, results)  -- results[i] = { track_name, artist_name, album_name, duration, has_synced, has_plain }
+  for i, r in ipairs(results) do
+    if r.has_synced then return i end
+  end
+end
+```
+
+- 钩子传的是**普通 Lua table 拷贝**，可安全存进 `ctx.state` 跨帧用（不是引用）。
+- 钩子出错只记日志，不影响 preset 与内置兜底。
+- `on_select` 只在 `media_selection_dirty()` 为真时调用（播放器集合或状态/元数据变化），不是每帧。
+- `lrclib_set_selector()` 把候选交给 `on_search`；返回 -1/越界则回退内置启发式。
+
 ## 8. 依赖
 系统：`wayland-client`、`wayland-egl`、`egl`、`gl`、`fontconfig`、`gio-2.0`、`glib-2.0`、
 `libsoup-3.0`、`libcjson`、`lua5.4`、`iconv`（glibc）、`wayland-scanner`（1.26）。
@@ -284,6 +324,10 @@ raylyrics ctl quit
    （libsoup 异步 + cJSON）。`--lyrics` / `--lrc` 模式已验证。
 5. **Phase 5** ✅：整合完成——overlay 显示当前行（整行亮）+ 下一行（暗），间奏空行清屏；
    `TextRenderer::Prepare()` 全曲预建字体一次、`SetText()` 按行只做布局，换行不再重建 SlugFont/SSBO。
+6. **Phase 6** ✅：多播放器 + 逻辑钩子——`media` 跟踪所有 MPRIS 播放器并订阅其事件，
+   `config.on_select` 选活动播放器，`config.on_metadata` 归一化匹配字段，
+   `config.on_search` 挑选 LRCLIB 搜索结果；preset 支持自定义 shader 的 Lua uniform 注入。
+   已验证：两播放器同时在线、三个钩子均生效。
 
 ## 10. 风险与待确认
 
