@@ -47,6 +47,11 @@ void rl_wl_set_namespace(const char *name);
 void rl_wl_set_exclusive_zone(int zone);
 void rl_wl_set_keyboard(int interactive);
 
+/* Make the surface draggable with the left mouse button. This gives up
+ * click-through: the whole surface takes pointer input. Must be called before
+ * rl_wl_create. */
+void rl_wl_set_draggable(int draggable);
+
 /* Select the output to place the overlay on, by wl_output name (e.g. "DP-1").
  * NULL/empty lets the compositor choose. Must be called before rl_wl_create. */
 void rl_wl_set_output(const char *name);

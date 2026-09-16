@@ -30,6 +30,7 @@ return {
   namespace = "raylyrics",
   exclusive_zone = -1,               -- -1 = 不占空间
   keyboard = false,
+  draggable = false,                 -- 左键拖拽（会失去点击穿透）
   fps = 60,
   font = { families = { "Noto Sans CJK SC" }, size = 72, line_spacing = 16, letter_spacing = 0 },
   colors = { current = { 1, 1, 1, 1 }, next = { 1, 1, 1, 0.3 } },
@@ -37,8 +38,8 @@ return {
 }
 ```
 
-`viewport`/`layer`/`anchor`/`margin`/`output`/`namespace`/`exclusive_zone`/`keyboard` 在 `InitWindow()`
-**之前**读取，改动需重启；`fps`/`font`/`colors` 热重载即时生效。
+`viewport`/`layer`/`anchor`/`margin`/`output`/`namespace`/`exclusive_zone`/`keyboard`/`draggable`
+在 `InitWindow()` **之前**读取，改动需重启；`fps`/`font`/`colors` 热重载即时生效。
 preset 顶层代码不要调 `f:*`（加载时还没有 GL）。
 
 API 细节见 `../README.md` 的 "Presets" 一节。

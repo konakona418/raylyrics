@@ -350,6 +350,7 @@ return {
   namespace = "raylyrics",
   exclusive_zone = -1,
   keyboard = false,
+  draggable = false,                 -- left-button dragging (gives up click-through)
   fps = 60,
   font = { families = { "Noto Sans CJK SC" }, size = 72, line_spacing = 16, letter_spacing = 0 },
   colors = { current = { 1, 1, 1, 1 }, next = { 1, 1, 1, 0.3 } },
@@ -358,9 +359,17 @@ return {
 ```
 
 `viewport`, `layer`, `anchor`, `margin`, `output`, `namespace`,
-`exclusive_zone` and `keyboard` are read **before** the window is created, so
-changing them needs a restart. `fps`, `font` and `colors` are re-applied on hot
-reload and on `ctl preset` / `ctl reload`.
+`exclusive_zone`, `keyboard` and `draggable` are read **before** the window is
+created, so changing them needs a restart. `fps`, `font` and `colors` are
+re-applied on hot reload and on `ctl preset` / `ctl reload`.
+
+With `draggable = true` the surface follows the left mouse button. It gives up
+click-through — the whole surface takes pointer input, so clicks on the overlay
+no longer reach the desktop. The surface moves by adjusting the margins of the
+anchored edges; an axis that is centered (neither edge anchored) is converted to
+a two-edge anchor on the first drag along it, so dragging works regardless of
+the declared anchor. The position is not saved; a restart returns to the
+declared `anchor`/`margin`.
 
 ### Hot reload
 

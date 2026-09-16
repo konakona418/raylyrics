@@ -1027,6 +1027,12 @@ struct PluginHost::Impl {
             setup.keyboard = keyboard.as<bool>();
         }
 
+        sol::object draggable = preset["draggable"];
+        if (draggable.is<bool>()) {
+            setup.has_draggable = true;
+            setup.draggable = draggable.as<bool>();
+        }
+
         sol::object fps = preset["fps"];
         if (fps.is<int>()) {
             setup.has_fps = true;

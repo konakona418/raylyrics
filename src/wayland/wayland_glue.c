@@ -9,6 +9,8 @@
 #include <wayland-client.h>
 #include <wayland-egl.h>
 
+#include <linux/input-event-codes.h>
+
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 
@@ -42,6 +44,14 @@ struct rl_wl_state {
     struct zwlr_layer_surface_v1 *layer_surface;
     struct wl_region *input_region;
     struct wl_egl_window *egl_window;
+
+    struct wl_seat *seat;
+    struct wl_pointer *pointer;
+    int pointer_x;
+    int pointer_y;
+    int dragging;
+    int drag_dx;
+    int drag_dy;
 
     struct rl_wl_output outputs[RL_WL_MAX_OUTPUTS];
     int output_count;
@@ -77,6 +87,11 @@ static int g_keyboard = 0;
 static int g_size_set = 0;
 static int g_requested_width = 0;
 static int g_requested_height = 0;
+
+/* Pointer dragging of the surface (preset-declared). */
+static int g_draggable = 0;
+
+void rl_wl_set_draggable(int draggable) { g_draggable = draggable ? 1 : 0; }
 
 void rl_wl_set_geometry(int anchor, int margin_top, int margin_right, int margin_bottom,
                         int margin_left) {
@@ -190,6 +205,88 @@ static const struct wl_surface_listener surface_listener = {
     .leave = surface_leave,
 };
 
+/* Pointer input, only used when rl_wl_set_draggable(1) made the surface
+ * interactive. Motion while the left button is held accumulates a delta that
+ * rl_wl_dispatch() turns into a margin change, which is how a layer-shell
+ * surface moves. */
+static void pointer_enter(void *data, struct wl_pointer *pointer, uint32_t serial,
+                          struct wl_surface *surface, wl_fixed_t sx, wl_fixed_t sy) {
+    (void)pointer;
+    (void)serial;
+    (void)surface;
+    struct rl_wl_state *state = data;
+    state->pointer_x = wl_fixed_to_int(sx);
+    state->pointer_y = wl_fixed_to_int(sy);
+}
+
+static void pointer_leave(void *data, struct wl_pointer *pointer, uint32_t serial,
+                          struct wl_surface *surface) {
+    (void)pointer;
+    (void)serial;
+    (void)surface;
+    struct rl_wl_state *state = data;
+    state->dragging = 0;
+}
+
+static void pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time, wl_fixed_t sx,
+                           wl_fixed_t sy) {
+    (void)pointer;
+    (void)time;
+    struct rl_wl_state *state = data;
+    const int x = wl_fixed_to_int(sx);
+    const int y = wl_fixed_to_int(sy);
+    if (state->dragging) {
+        state->drag_dx += x - state->pointer_x;
+        state->drag_dy += y - state->pointer_y;
+    }
+    state->pointer_x = x;
+    state->pointer_y = y;
+}
+
+static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t serial, uint32_t time,
+                           uint32_t button, uint32_t button_state) {
+    (void)pointer;
+    (void)serial;
+    (void)time;
+    struct rl_wl_state *state = data;
+    if (button != BTN_LEFT) return;
+    state->dragging = button_state == WL_POINTER_BUTTON_STATE_PRESSED ? 1 : 0;
+    if (!state->dragging) {
+        state->drag_dx = 0;
+        state->drag_dy = 0;
+    }
+}
+
+static void pointer_axis(void *data, struct wl_pointer *pointer, uint32_t time, uint32_t axis,
+                         wl_fixed_t value) {
+    (void)data;
+    (void)pointer;
+    (void)time;
+    (void)axis;
+    (void)value;
+}
+
+static const struct wl_pointer_listener pointer_listener = {
+    .enter = pointer_enter,
+    .leave = pointer_leave,
+    .motion = pointer_motion,
+    .button = pointer_button,
+    .axis = pointer_axis,
+};
+
+static void seat_capabilities(void *data, struct wl_seat *seat, uint32_t capabilities) {
+    struct rl_wl_state *state = data;
+    const int has_pointer = (capabilities & WL_SEAT_CAPABILITY_POINTER) != 0;
+    if (has_pointer && state->pointer == NULL) {
+        state->pointer = wl_seat_get_pointer(seat);
+        wl_pointer_add_listener(state->pointer, &pointer_listener, state);
+    }
+}
+
+static const struct wl_seat_listener seat_listener = {
+    .capabilities = seat_capabilities,
+};
+
 static void ls_configure(void *data, struct zwlr_layer_surface_v1 *layer_surface,
                          uint32_t serial, uint32_t width, uint32_t height) {
     struct rl_wl_state *state = data;
@@ -220,6 +317,13 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
     } else if (strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0) {
         uint32_t bind_version = version < 4 ? version : 4;
         state->layer_shell = wl_registry_bind(registry, name, &zwlr_layer_shell_v1_interface, bind_version);
+    } else if (strcmp(interface, wl_seat_interface.name) == 0) {
+        if (g_draggable && state->seat == NULL) {
+            // Version 1 keeps the pointer listener to the events every
+            // compositor sends.
+            state->seat = wl_registry_bind(registry, name, &wl_seat_interface, 1);
+            wl_seat_add_listener(state->seat, &seat_listener, state);
+        }
     } else if (strcmp(interface, wl_output_interface.name) == 0) {
         if (state->output_count < RL_WL_MAX_OUTPUTS) {
             struct rl_wl_output *output = &state->outputs[state->output_count];
@@ -388,8 +492,12 @@ rl_wl_state *rl_wl_create(int width, int height) {
     wl_surface_add_listener(state->surface, &surface_listener, state);
     wl_surface_set_buffer_scale(state->surface, 1);
 
-    state->input_region = wl_compositor_create_region(state->compositor);
-    wl_surface_set_input_region(state->surface, state->input_region);
+    if (!g_draggable) {
+        // An empty input region makes the overlay click-through. A draggable
+        // surface leaves the region unset, so the whole surface takes input.
+        state->input_region = wl_compositor_create_region(state->compositor);
+        wl_surface_set_input_region(state->surface, state->input_region);
+    }
 
     state->layer_surface = zwlr_layer_shell_v1_get_layer_surface(
         state->layer_shell, state->surface, state->selected_output,
@@ -506,6 +614,57 @@ int rl_wl_swap(rl_wl_state *state) {
     return 0;
 }
 
+/* Move the surface by adjusting the margins of the anchored edges. The surface
+ * keeps its size, so only the position changes. */
+static void apply_drag(struct rl_wl_state *state, int dx, int dy) {
+    int output_width = 0;
+    int output_height = 0;
+    resolve_output_size(state, &output_width, &output_height);
+    const int max_x = output_width > 0 ? output_width : 100000;
+    const int max_y = output_height > 0 ? output_height : 100000;
+
+    // A centered axis (neither edge anchored) ignores its margins, so it cannot
+    // be dragged. Anchor both edges of that axis at the position the surface
+    // already occupies, which makes the margins meaningful.
+    if (dx != 0 && !(g_anchor & (RL_WL_ANCHOR_LEFT | RL_WL_ANCHOR_RIGHT))) {
+        const int centred = (max_x - state->width) / 2;
+        g_anchor |= RL_WL_ANCHOR_LEFT | RL_WL_ANCHOR_RIGHT;
+        g_margin_left = centred;
+        g_margin_right = max_x - state->width - centred;
+        zwlr_layer_surface_v1_set_anchor(state->layer_surface, (uint32_t)g_anchor);
+    }
+    if (dy != 0 && !(g_anchor & (RL_WL_ANCHOR_TOP | RL_WL_ANCHOR_BOTTOM))) {
+        const int centred = (max_y - state->height) / 2;
+        g_anchor |= RL_WL_ANCHOR_TOP | RL_WL_ANCHOR_BOTTOM;
+        g_margin_top = centred;
+        g_margin_bottom = max_y - state->height - centred;
+        zwlr_layer_surface_v1_set_anchor(state->layer_surface, (uint32_t)g_anchor);
+    }
+
+    if (dx != 0) {
+        if (g_anchor & RL_WL_ANCHOR_LEFT) g_margin_left += dx;
+        if (g_anchor & RL_WL_ANCHOR_RIGHT) g_margin_right -= dx;
+    }
+    if (dy != 0) {
+        if (g_anchor & RL_WL_ANCHOR_TOP) g_margin_top += dy;
+        if (g_anchor & RL_WL_ANCHOR_BOTTOM) g_margin_bottom -= dy;
+    }
+
+    // Keep at least part of the surface on the output.
+    if (g_margin_left < 0) g_margin_left = 0;
+    if (g_margin_right < 0) g_margin_right = 0;
+    if (g_margin_top < 0) g_margin_top = 0;
+    if (g_margin_bottom < 0) g_margin_bottom = 0;
+    if (g_margin_left > max_x) g_margin_left = max_x;
+    if (g_margin_right > max_x) g_margin_right = max_x;
+    if (g_margin_top > max_y) g_margin_top = max_y;
+    if (g_margin_bottom > max_y) g_margin_bottom = max_y;
+
+    zwlr_layer_surface_v1_set_margin(state->layer_surface, g_margin_top, g_margin_right,
+                                     g_margin_bottom, g_margin_left);
+    wl_surface_commit(state->surface);
+}
+
 int rl_wl_dispatch(rl_wl_state *state) {
     if (!state || !state->display) return -1;
 
@@ -532,6 +691,12 @@ int rl_wl_dispatch(rl_wl_state *state) {
 
     if (wl_display_dispatch_pending(state->display) < 0) return -1;
 
+    if (state->drag_dx != 0 || state->drag_dy != 0) {
+        apply_drag(state, state->drag_dx, state->drag_dy);
+        state->drag_dx = 0;
+        state->drag_dy = 0;
+    }
+
     return 0;
 }
 
@@ -550,6 +715,8 @@ void rl_wl_destroy(rl_wl_state *state) {
     }
 
     if (state->egl_window) wl_egl_window_destroy(state->egl_window);
+    if (state->pointer) wl_pointer_destroy(state->pointer);
+    if (state->seat) wl_seat_destroy(state->seat);
     if (state->input_region) wl_region_destroy(state->input_region);
     if (state->layer_surface) zwlr_layer_surface_v1_destroy(state->layer_surface);
     if (state->surface) wl_surface_destroy(state->surface);

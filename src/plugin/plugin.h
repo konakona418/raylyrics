@@ -96,6 +96,10 @@ struct PresetSetup {
     bool has_keyboard = false;
     bool keyboard = false;
 
+    // Left-button dragging. Gives up click-through: the surface takes input.
+    bool has_draggable = false;
+    bool draggable = false;
+
     bool has_fps = false;
     int fps = 60;
 

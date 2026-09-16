@@ -553,6 +553,7 @@ int RunOverlay() {
     if (setup.has_namespace) rl_wl_set_namespace(setup.layer_namespace.c_str());
     if (setup.has_exclusive_zone) rl_wl_set_exclusive_zone(setup.exclusive_zone);
     if (setup.has_keyboard) rl_wl_set_keyboard(setup.keyboard ? 1 : 0);
+    if (setup.has_draggable) rl_wl_set_draggable(setup.draggable ? 1 : 0);
 
     // raylib wants positive dimensions; the platform replaces them with the
     // resolved surface size once the compositor has configured the surface.
