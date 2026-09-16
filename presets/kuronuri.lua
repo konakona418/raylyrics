@@ -1,10 +1,12 @@
 -- kuronuri: a letter being censored, after Frog96's 黒塗り世界宛て書簡.
 --
 -- Three lines of the lyrics sit on a white sheet at a time, and the song walks
--- the sheet through the lyrics in blocks of three: a block only gives way once
--- every line in it has had its turn. Once a line is about half sung a censor's
--- bar sweeps it out from the left, and while that bar crosses the sheet shivers
--- sideways along its scanlines, on top of a steady chroma split.
+-- the sheet through the lyrics in blocks of three. Once a line is about half
+-- sung a censor's bar sweeps it out from the left, and the block hands over the
+-- moment the last of its three bars lands - not when the song reaches the next
+-- line - so the sheet never sits fully censored waiting for the lyrics. While a
+-- bar crosses the sheet shivers sideways along its scanlines, on top of a steady
+-- chroma split, bloom and scanlines.
 --
 -- The crossing is sized from the line - a longer line takes longer to cover -
 -- and clamped, and it eases out exponentially rather than sliding at a constant
@@ -25,7 +27,6 @@ local SWEEP_PER_PX = 0.0009  -- seconds of sweep per pixel of line width
 local SWEEP_MIN = 0.35
 local SWEEP_MAX = 1.2        -- ceiling, however long the line is
 local SWEEP_EXP = 5.0        -- exponential ease-out rate
-local HOLD = 0.25            -- keep a spent block up so its last sweep is seen
 
 -- How long the line is left alone before its bar comes: half sung, clamped so
 -- neither a very short nor a very long line waits an odd amount of time.
@@ -59,6 +60,26 @@ local function sweep(pos, start, duration)
   if x <= 0.0 then return 0.0 end
   if x >= 1.0 then return 1.0 end
   return (1.0 - 2.0 ^ (-SWEEP_EXP * x)) / (1.0 - 2.0 ^ -SWEEP_EXP)
+end
+
+-- Everything about line `i`'s bar: how wide the line is, when the bar arrives
+-- and how long it takes. The wait is half the line and the crossing is sized
+-- from the line, both clamped.
+local function bar_timing(f, lines, i)
+  local entry = lines[i + 1]
+  if entry == nil then return nil end
+
+  local width = f:measure(entry.text).width
+  local finish = line_end(lines, i)
+  local span = math.max(finish - entry.time, 0.0)
+
+  local delay = math.min(math.max(span * SWEEP_AT, DELAY_MIN), DELAY_MAX)
+  local begin = entry.time + delay
+  local duration = math.min(math.max(width * SWEEP_PER_PX, SWEEP_MIN), SWEEP_MAX)
+  -- Never let the bar run past the line's own slot.
+  duration = math.min(duration, math.max(finish - begin, 0.15))
+
+  return { width = width, begin = begin, duration = duration, finish = begin + duration }
 end
 
 local CORRUPT = [[
@@ -148,14 +169,16 @@ return {
       if lines[i].time <= pos then active = i - 1 else break end
     end
 
-    -- Walk in blocks of three, but let the last sweep of a block finish before
-    -- handing over.
+    -- The block walks on its own: the moment the last of its three bars lands it
+    -- hands over, whether or not the song has reached the next line yet. Only a
+    -- seek - or the lyrics catching up - pulls it back into line.
     local natural = math.floor(active / 3) * 3
     local block = state.block or natural
-    if active < block then
-      block = natural
-    elseif natural > block then
-      if pos >= line_end(lines, block + 2) + HOLD then block = natural end
+    if natural > block or natural < block - 3 then block = natural end
+    while lines[block + 4] ~= nil do
+      local last = bar_timing(f, lines, block + 2)
+      if last == nil or pos < last.finish then break end
+      block = block + 3
     end
     state.block = block
 
@@ -166,22 +189,12 @@ return {
     for k = 0, 2 do
       local index = block + k
       local entry = lines[index + 1]
+      local timing = bar_timing(f, lines, index)
       local text = entry and entry.text or ""
-      local width = f:measure(text).width
+      local width = timing and timing.width or 0
       rows[k + 1] = { text = text, width = width }
       if width > text_w then text_w = width end
-
-      -- The bar waits for the line to be about half sung, then takes its time
-      -- from how long the line is: a longer line takes longer to cover.
-      local start_time = entry and entry.time or pos
-      local finish = line_end(lines, index)
-      local span = math.max(finish - start_time, 0.0)
-      local delay = math.min(math.max(span * SWEEP_AT, DELAY_MIN), DELAY_MAX)
-      local begin = start_time + delay
-      local duration = math.min(math.max(width * SWEEP_PER_PX, SWEEP_MIN), SWEEP_MAX)
-      -- Never let the bar run past the line's own slot.
-      duration = math.min(duration, math.max(finish - begin, 0.15))
-      redact[k + 1] = sweep(pos, begin, duration)
+      redact[k + 1] = timing and sweep(pos, timing.begin, timing.duration) or 0.0
     end
 
     -- Clamp the sheet to the surface; a line wider than the room is scaled to
