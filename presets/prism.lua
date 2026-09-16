@@ -1,7 +1,7 @@
--- prism: fullscreen rainbow. Only the current line, characters spread across
--- the screen along a slow sine path (reading order preserved), each with its
--- own drifting transform, plus drifting particles and rotating polygon
--- outlines, all fed through bloom.
+-- prism: fullscreen rainbow. Only the current line, split into words by
+-- f:words and laid out on a screen-filling grid (reading order preserved),
+-- each segment drifting with its own transform, plus drifting particles and
+-- rotating polygon outlines, all fed through bloom.
 --
 -- The preset declares its own fullscreen surface, so no config changes needed.
 
@@ -90,16 +90,6 @@ local function draw_particles(l, f, ctx, time)
   end
 end
 
--- Count UTF-8 codepoints; one glyph per codepoint (no shaping).
-local function utf8_count(text)
-  local count = 0
-  for i = 1, #text do
-    local b = text:byte(i)
-    if b < 0x80 or b >= 0xC0 then count = count + 1 end
-  end
-  return count
-end
-
 local FONT_SIZE = 200  -- declared below; Slug is resolution independent, so the
                        -- per-glyph scale keeps it relative to the screen.
 
@@ -107,9 +97,15 @@ local function draw_lyric(l, f, ctx, time)
   local text = ctx.line.text
   if text == "" then return end
 
-  -- Lay the glyphs out on a grid whose column count fits the screen aspect.
+  -- f:words keeps a word (or a Japanese segment) together, so the layout moves
+  -- units rather than characters: Latin words stay readable, and スーパー does
+  -- not come apart at the long vowel.
+  local segments = f:words(text)
+  local n = #segments
+  if n == 0 then return end
+
+  -- Lay the segments out on a grid whose column count fits the screen aspect.
   -- Row-major order keeps reading order.
-  local n = math.max(utf8_count(text), 1)
   local aspect = f.width / math.max(f.height, 1.0)
   local cols = math.ceil(math.sqrt(n * aspect))
   cols = math.max(1, math.min(cols, n))
@@ -119,13 +115,13 @@ local function draw_lyric(l, f, ctx, time)
   local seed_line = (ctx.line.index + 1) * 0.618
   local appear = math.min(1.0, ctx.line.age / 0.5)
 
-  l:text(text, { anchor = "top-left" }, function(i, g)
-    local col = i % cols
-    local row = math.floor(i / cols)
+  for index, segment in ipairs(segments) do
+    local col = (index - 1) % cols
+    local row = math.floor((index - 1) / cols)
     local row_count = math.min(cols, n - row * cols)
     local t = (col + 0.5) / row_count
     local u = (row + 0.5) / rows
-    local seed = noise(i + 1, seed_line)
+    local seed = noise(index, seed_line)
 
     -- Grid position keeps reading order; the sine gives each row vertical life.
     local base_x = f.width * (0.5 + (t - 0.5) * 0.86)
@@ -134,19 +130,30 @@ local function draw_lyric(l, f, ctx, time)
 
     local px = base_x + math.sin(time * 0.33 + seed * TAU) * f.width * 0.014
     local py = base_y + math.cos(time * 0.27 + seed * TAU) * f.height * 0.028
-    local rotation = math.sin(time * 0.30 + seed * TAU) * 16.0
-    local scale = scale_base * (1.0 + math.sin(time * 0.21 + seed * TAU) * 0.22)
+    local scale = scale_base * (1.0 + math.sin(time * 0.21 + seed * TAU) * 0.16)
     local hue = t * 0.8 + u * 0.2 + time * 0.04 + seed * 0.15
+    -- Centre the segment on the cell; a segment drawn on its own starts at x 0.
+    local origin_x = px - segment.width * 0.5
 
-    return {
-      offset_x = px - g.x,
-      offset_y = py - g.y,
-      scale = scale,
-      rotation = rotation,
-      alpha = appear,
-      color = hsv(hue, 0.85, 1.0),
-    }
-  end)
+    -- The per-glyph rotation turns each glyph about its own origin, so keep it
+    -- small: a word has to stay legible as a word.
+    local first_x, first_baseline
+    l:text(segment.text, { anchor = "top-left" }, function(i, g)
+      if i == 0 then
+        first_x = g.x
+        first_baseline = g.y
+      end
+      local wobble = math.sin(time * 0.30 + seed * TAU + i * 0.7) * 3.0
+      return {
+        offset_x = origin_x - first_x,
+        offset_y = py - first_baseline,
+        scale = scale,
+        rotation = wobble,
+        alpha = appear,
+        color = hsv(hue + i * 0.015, 0.85, 1.0),
+      }
+    end)
+  end
 end
 
 return {
