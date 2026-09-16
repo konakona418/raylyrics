@@ -281,6 +281,10 @@ struct LyricsRuntime {
     lrclib_client* client = nullptr;
     raylyrics::LyricsCache* cache = nullptr;
     lrc_doc* doc = nullptr;
+    // Which song `doc` belongs to, so the lyrics can be kept across a player
+    // switch within the same song but dropped when the song itself changes.
+    std::string doc_artist;
+    std::string doc_title;
     uint64_t generation = ~0ull;
     uint64_t doc_serial = 0;
     bool fetching = false;
@@ -295,11 +299,15 @@ struct RemoteRequest {
     double duration = 0.0;
 };
 
-// Install new lyrics, replacing whatever is on screen. Only ever called with
-// lyrics in hand, so a lookup that finds nothing cannot blank the overlay.
-void ReplaceDoc(LyricsRuntime* runtime, lrc_doc* next) {
+// Install new lyrics, replacing whatever is on screen, and remember which song
+// they belong to. Only ever called with lyrics in hand, so a lookup that finds
+// nothing cannot blank the overlay.
+void ReplaceDoc(LyricsRuntime* runtime, lrc_doc* next, const std::string& artist,
+                const std::string& title) {
     if (runtime->doc != nullptr) lrc_free(runtime->doc);
     runtime->doc = next;
+    runtime->doc_artist = artist;
+    runtime->doc_title = title;
     runtime->doc_serial++;
 }
 
@@ -323,7 +331,7 @@ void OnRemoteLyrics(void* user_data, const lrclib_result* result) {
         }
         lrc_doc* next = lrc_parse(result->synced_lrc, std::strlen(result->synced_lrc));
         if (next != nullptr) {
-            ReplaceDoc(runtime, next);
+            ReplaceDoc(runtime, next, artist, title);
             std::fprintf(stderr, "raylyrics: fetched %s - %s (%zu lines)\n",
                          result->artist_name != nullptr ? result->artist_name : "?",
                          result->track_name != nullptr ? result->track_name : "?",
@@ -688,9 +696,6 @@ int RunOverlay() {
 
         if (state->generation != runtime.generation) {
             runtime.generation = state->generation;
-            // Whatever is on screen is left alone here. It is only replaced once
-            // a replacement is in hand, so a switch to a player with no lyrics,
-            // or a lookup that comes back empty, cannot blank the overlay.
 
             raylyrics::PluginMetadata meta;
             meta.artist = state->artist != nullptr ? state->artist : "";
@@ -700,10 +705,26 @@ int RunOverlay() {
             meta.player = state->player != nullptr ? state->player : "";
             plugin.NormalizeMetadata(meta);
 
+            std::string artist = meta.artist;
+            std::string title = meta.title;
+            if (!title.empty() && artist.empty()) SplitCombinedTitle(title, &title, &artist);
+
+            // What is on screen belongs to a particular song. Keep it while that
+            // song is what is playing - a switch to another player wrapping the
+            // same playback must not blank it - but drop it the moment the song
+            // changes, so one song's words never run against another's timeline,
+            // which reads as the lyrics starting over.
+            const bool same_song = runtime.doc != nullptr && title == runtime.doc_title &&
+                                   artist == runtime.doc_artist;
+            if (runtime.doc != nullptr && !same_song) {
+                lrc_free(runtime.doc);
+                runtime.doc = nullptr;
+                runtime.doc_serial++;
+                runtime.doc_artist.clear();
+                runtime.doc_title.clear();
+            }
+
             if (state->valid && !meta.title.empty()) {
-                std::string artist = meta.artist;
-                std::string title = meta.title;
-                if (artist.empty()) SplitCombinedTitle(title, &title, &artist);
                 const double duration_seconds = static_cast<double>(meta.duration_us) / 1e6;
                 const std::string url = state->url != nullptr ? state->url : "";
 
@@ -711,7 +732,7 @@ int RunOverlay() {
                 if (next != nullptr) {
                     std::fprintf(stderr, "raylyrics: local lyrics for %s (%zu lines)\n",
                                  title.c_str(), lrc_line_count(next));
-                    ReplaceDoc(&runtime, next);
+                    ReplaceDoc(&runtime, next, artist, title);
                 } else {
                     std::string cached;
                     if (cache.Get(artist, title, meta.album, duration_seconds, &cached)) {
@@ -720,7 +741,7 @@ int RunOverlay() {
                     if (next != nullptr) {
                         std::fprintf(stderr, "raylyrics: cached lyrics for %s (%zu lines)\n",
                                      title.c_str(), lrc_line_count(next));
-                        ReplaceDoc(&runtime, next);
+                        ReplaceDoc(&runtime, next, artist, title);
                     } else {
                         runtime.fetching = true;
                         auto* request = new RemoteRequest{&runtime, state->generation};
