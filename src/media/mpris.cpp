@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+#include "media/player_selection.h"
+
 namespace {
 
 constexpr const char* kMprisPrefix = "org.mpris.MediaPlayer2.";
@@ -22,7 +24,7 @@ int64_t NowUs() {
     return static_cast<int64_t>(ts.tv_sec) * 1000000 + ts.tv_nsec / 1000;
 }
 
-bool IsFirefox(const std::string& name) { return name.find("firefox") != std::string::npos; }
+double NowSeconds() { return static_cast<double>(NowUs()) / 1e6; }
 
 bool HasKey(GVariant* dict, const char* key) {
     GVariant* value = g_variant_lookup_value(dict, key, nullptr);
@@ -47,6 +49,7 @@ struct media_player {
 
     bool valid = false;
     bool playing = false;
+    std::string status;  // raw PlaybackStatus: Playing / Paused / Stopped
     int64_t position_us = 0;
     int64_t position_stamp_us = 0;
     int64_t length_us = 0;
@@ -90,10 +93,28 @@ struct media_backend {
     std::vector<media_player*> players;
     std::string active;
     bool dirty = true;
+    raylyrics::PlayerSelector selector;
 
     media_state state{};
     uint64_t state_generation = 0;
     std::string state_track_key;
+
+    // The player set as the selection policy sees it.
+    std::vector<raylyrics::PlayerSnapshot> Snapshots() const {
+        std::vector<raylyrics::PlayerSnapshot> snapshots;
+        snapshots.reserve(players.size());
+        for (const media_player* player : players) {
+            raylyrics::PlayerSnapshot snapshot;
+            snapshot.bus_name = player->name;
+            snapshot.playing = player->playing;
+            snapshot.followable = player->status != "Stopped";
+            snapshot.has_title = !player->title.empty();
+            snapshot.has_artist = !player->artist.empty();
+            snapshot.has_track = snapshot.has_title || snapshot.has_artist;
+            snapshots.push_back(std::move(snapshot));
+        }
+        return snapshots;
+    }
 
     media_player* Find(const std::string& name) const {
         for (media_player* player : players) {
@@ -144,6 +165,7 @@ struct media_backend {
 
         const gchar* status = nullptr;
         if (g_variant_lookup(dict, "PlaybackStatus", "&s", &status)) {
+            player->status = status;
             player->playing = std::strcmp(status, "Playing") == 0;
         }
 
@@ -263,6 +285,7 @@ struct media_backend {
         CallGetAll(player);
         CallGetIdentity(player);
         player->RefreshInfo();
+        selector.Observe(name, player->playing, NowSeconds());
         dirty = true;
         std::fprintf(stderr, "raylyrics: player appeared %s (%s)\n", name.c_str(),
                      player->identity.empty() ? "?" : player->identity.c_str());
@@ -285,6 +308,10 @@ struct media_backend {
         if (active == name) active.clear();
         dirty = true;
         std::fprintf(stderr, "raylyrics: player vanished %s\n", name.c_str());
+
+        std::set<std::string> present;
+        for (const media_player* remaining : players) present.insert(remaining->name);
+        selector.ForgetAbsent(present);
         RefreshState();
     }
 
@@ -312,6 +339,7 @@ struct media_backend {
 
             player->last_change_us = NowUs();
             player->RefreshInfo();
+            selector.Observe(player->name, player->playing, NowSeconds());
             if (metadata_changed || status_changed) dirty = true;
             RefreshState();
         }
@@ -376,32 +404,8 @@ struct media_backend {
         g_variant_unref(reply);
     }
 
-    // Built-in fallback policy: keep a playing active player, else prefer a
-    // playing player (Firefox first), else keep the active player, else any
-    // Firefox, else the first player.
-    std::string SelectDefault() const {
-        media_player* current = Active();
-        if (current != nullptr && current->playing) return current->name;
-
-        media_player* playing_firefox = nullptr;
-        media_player* playing_any = nullptr;
-        for (media_player* player : players) {
-            if (!player->playing) continue;
-            if (IsFirefox(player->name)) {
-                playing_firefox = player;
-                break;
-            }
-            if (playing_any == nullptr) playing_any = player;
-        }
-        if (playing_firefox != nullptr) return playing_firefox->name;
-        if (playing_any != nullptr) return playing_any->name;
-        if (current != nullptr) return current->name;
-
-        for (media_player* player : players) {
-            if (IsFirefox(player->name)) return player->name;
-        }
-        return players.empty() ? std::string() : players.front()->name;
-    }
+    // Built-in fallback policy; see player_selection.h for the rules.
+    std::string SelectDefault() const { return selector.Choose(Snapshots()); }
 
     void RefreshState() {
         media_player* player = Active();
@@ -531,6 +535,7 @@ extern "C" void media_set_active(media_backend* backend, const char* name) {
 
     const bool switched = chosen != backend->active;
     backend->active = chosen;
+    backend->selector.set_current(chosen);
     backend->dirty = false;
     if (switched) {
         backend->CallGetPosition(backend->Active());

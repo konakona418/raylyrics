@@ -140,7 +140,7 @@ are evaluated in the preset Lua state. Arguments are plain Lua table copies.
 
 ```lua
 -- Pick the active player: return a bus name or a 1-based index; nil keeps the
--- built-in policy (playing player, Firefox first, else the first).
+-- built-in policy (see "Player selection" below).
 config.on_select = function(players)  -- players[i] = {name, identity, title, artist, album, playing, position_us, length_us}
   for i, p in ipairs(players) do
     if p.playing and p.identity == "Spotify" then return i end
@@ -162,6 +162,28 @@ config.on_search = function(query, results)
 end
 ```
 
+### Player selection
+
+With no `on_select` hook the built-in policy (`src/media/player_selection.{h,cpp}`)
+runs. Among the players that report a track, the richest wins, ranked by:
+
+1. **has an artist** — a browser exposes its own MPRIS service beside the bridge
+   that wraps the same playback, and the browser's copy often carries the raw
+   tab title with an empty artist (and may report a *different* media session as
+   the playing one). A source that names no performer cannot be matched, so it
+   never outranks one that does, not even by being the one playing;
+2. **started playing more than 1s later** than the current player — two services
+   that wrap the same playback announce themselves moments apart;
+3. is playing;
+4. has a title;
+5. is the current player.
+
+Richness outranking "is playing" is what makes the choice stable: with both
+services reporting, the overlay does not flip on every play/pause. A player that
+reports no track at all is only followed when nothing else does. The policy is
+pure (no D-Bus, no I/O), so the awkward combinations can be exercised without a
+session bus.
+
 ### Lyrics sources and cache
 
 Resolution order: **local `.lrc` → cache → LRCLIB**.
@@ -175,6 +197,34 @@ Resolution order: **local `.lrc` → cache → LRCLIB**.
   metadata sidecar. The key hashes artist/title/album/rounded-duration, so
   lookups and writes agree. Entries older than `cache_ttl_days` are dropped on
   lookup (and by `cache prune`).
+
+### Matching
+
+Search candidates are ranked by `src/lyrics/match.{h,cpp}`, with the reasons
+logged so a miss can say what did not line up. Two gates reject outright:
+
+1. **Version conflict.** Version markers (`live`, `instrumental`, `remix`,
+   `sped up`, `tv size`, `伴奏`, `女声版`, `戏腔版`, ...) say which recording is
+   meant; a candidate carrying different ones is a different recording whose
+   timings will not line up even when the words are the same. Tags that change
+   the recording but not the words — a remaster — are exempt, so they never
+   reject the only correct candidate.
+2. **No artist in common.** The performer is the strongest identity available.
+
+Past the gates, the confidence follows what corroborates the title:
+
+- **HIGH** — exact title and matching artist, or a strong title with the artist,
+  the album, or a duration within 3s corroborating it.
+- **MEDIUM** — an exact title whose duration is a *container length* (a
+  disagreement larger than the whole shorter track, i.e. an album upload, not a
+  different edit); a strong title alone; or one title containing the other with
+  the artist corroborating.
+- **NONE** — everything else.
+
+Ranking is confidence, then title similarity, then the closest duration. Titles
+are compared after `BaseTitle()` strips bracketed credits, `feat.` suffixes,
+platform noise (`Official MV`, `中文字幕`, ...) and trailing version markers.
+A preset's `on_search` hook, when it returns an index, takes precedence.
 
 ## Presets
 
@@ -317,8 +367,8 @@ The script tars the working tree, runs `makepkg`, then installs the resulting
   scripts (Devanagari, Arabic) will be misplaced. There is no per-character
   karaoke highlight and no color emoji (Slug needs outlines).
 - **Firefox/Spotify MPRIS quirks**: the artist is sometimes empty and the title
-  holds `Artist • Title`; use `config.on_metadata` to normalize. Firefox exposes
-  two players (its own and `plasma-browser-integration`) whose status updates
-  can lag each other.
+  holds `Artist • Title`; use `config.on_metadata` to normalize. Firefox can
+  expose two players (its own and `plasma-browser-integration`) whose status
+  updates lag each other, which the selection policy's recency margin absorbs.
 - **Wayland only**, and it needs a compositor implementing `wlr-layer-shell`.
 - Changing bootstrap declarations (`viewport`, `layer`, ...) requires a restart.

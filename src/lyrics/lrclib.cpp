@@ -96,30 +96,16 @@ void Finish(RequestContext* context, lrclib_result* out, std::string* synced, st
     delete context;
 }
 
-// Built-in /api/search heuristic: the synced entry whose duration is closest
-// to the query, else the first entry that has plain lyrics.
-int BuiltinSearchChoice(const std::vector<cJSON*>& items, double query_duration) {
-    int best = -1;
-    double best_delta = 1e18;
-    for (size_t i = 0; i < items.size(); i++) {
-        const cJSON* synced_item = cJSON_GetObjectItemCaseSensitive(items[i], "syncedLyrics");
-        if (!cJSON_IsString(synced_item) || synced_item->valuestring == nullptr) continue;
-        double duration = 0.0;
-        const cJSON* duration_item = cJSON_GetObjectItemCaseSensitive(items[i], "duration");
-        if (cJSON_IsNumber(duration_item)) duration = duration_item->valuedouble;
-        const double delta = (query_duration > 0.0) ? std::fabs(duration - query_duration) : 0.0;
-        if (best < 0 || delta < best_delta) {
-            best = static_cast<int>(i);
-            best_delta = delta;
-        }
+// Fallback when no selector is installed: the first entry that has lyrics.
+// Ranking candidates against the track is the caller's job (lyrics/match.h).
+int FirstWithLyrics(const std::vector<cJSON*>& items) {
+    for (std::size_t i = 0; i < items.size(); i++) {
+        const cJSON* synced = cJSON_GetObjectItemCaseSensitive(items[i], "syncedLyrics");
+        if (cJSON_IsString(synced) && synced->valuestring != nullptr) return static_cast<int>(i);
     }
-    if (best >= 0) return best;
-
-    for (size_t i = 0; i < items.size(); i++) {
-        const cJSON* plain_item = cJSON_GetObjectItemCaseSensitive(items[i], "plainLyrics");
-        if (cJSON_IsString(plain_item) && plain_item->valuestring != nullptr) {
-            return static_cast<int>(i);
-        }
+    for (std::size_t i = 0; i < items.size(); i++) {
+        const cJSON* plain = cJSON_GetObjectItemCaseSensitive(items[i], "plainLyrics");
+        if (cJSON_IsString(plain) && plain->valuestring != nullptr) return static_cast<int>(i);
     }
     return -1;
 }
@@ -159,7 +145,7 @@ int ChooseSearchResult(const RequestContext* context, const std::vector<cJSON*>&
             static_cast<int>(candidates.size()));
         if (chosen >= 0 && chosen < static_cast<int>(items.size())) return chosen;
     }
-    return BuiltinSearchChoice(items, context->duration);
+    return FirstWithLyrics(items);
 }
 
 void OnResponse(GObject* source, GAsyncResult* result, gpointer user_data) {

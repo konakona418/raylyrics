@@ -18,6 +18,7 @@
 #include "lyrics/encoding.h"
 #include "lyrics/lrc.h"
 #include "lyrics/lrclib.h"
+#include "lyrics/match.h"
 #include "media/media.h"
 #include "plugin/plugin.h"
 #include "render/text.h"
@@ -390,7 +391,8 @@ std::string BuildSongText(const lrc_doc* doc) {
     return out;
 }
 
-// Bridges the LRCLIB /api/search candidate list to config.on_search.
+// Bridges the LRCLIB /api/search candidate list to config.on_search, then the
+// built-in matching rules when the hook makes no choice.
 int OnSearchCandidates(void* user_data, const char* artist, const char* title, const char* album,
                        double query_duration, const lrclib_candidate* candidates, int count) {
     auto* plugin = static_cast<raylyrics::PluginHost*>(user_data);
@@ -403,17 +405,46 @@ int OnSearchCandidates(void* user_data, const char* artist, const char* title, c
     query.duration_us = static_cast<int64_t>(query_duration * 1e6);
 
     std::vector<raylyrics::PluginSearchResult> results(static_cast<size_t>(count));
+    std::vector<raylyrics::Candidate> matches(static_cast<size_t>(count));
     for (int i = 0; i < count; i++) {
-        const lrclib_candidate& candidate = candidates[i];
+        const lrclib_candidate& source = candidates[i];
         raylyrics::PluginSearchResult& result = results[static_cast<size_t>(i)];
-        result.track_name = candidate.track_name != nullptr ? candidate.track_name : "";
-        result.artist_name = candidate.artist_name != nullptr ? candidate.artist_name : "";
-        result.album_name = candidate.album_name != nullptr ? candidate.album_name : "";
-        result.duration = candidate.duration;
-        result.has_synced = candidate.has_synced != 0;
-        result.has_plain = candidate.has_plain != 0;
+        result.track_name = source.track_name != nullptr ? source.track_name : "";
+        result.artist_name = source.artist_name != nullptr ? source.artist_name : "";
+        result.album_name = source.album_name != nullptr ? source.album_name : "";
+        result.duration = source.duration;
+        result.has_synced = source.has_synced != 0;
+        result.has_plain = source.has_plain != 0;
+
+        raylyrics::Candidate& candidate = matches[static_cast<size_t>(i)];
+        candidate.title = result.track_name;
+        candidate.artist = result.artist_name;
+        candidate.album = result.album_name;
+        candidate.duration_s = source.duration;
+        candidate.has_synced = result.has_synced;
+        candidate.has_plain = result.has_plain;
     }
-    return plugin->SelectSearchResult(query, results);
+
+    const int chosen = plugin->SelectSearchResult(query, results);
+    if (chosen >= 0) return chosen;
+
+    raylyrics::TrackMetadata track;
+    track.title = query.title;
+    track.artist = query.artist;
+    track.album = query.album;
+    track.duration_s = query_duration;
+
+    std::vector<std::string> reasons;
+    const int ranked = raylyrics::Rank(track, matches, &reasons);
+    std::fprintf(stderr, "raylyrics: search \"%s - %s\":\n", track.artist.c_str(),
+                 track.title.c_str());
+    for (const std::string& reason : reasons) {
+        std::fprintf(stderr, "raylyrics:   %s\n", reason.c_str());
+    }
+    std::fprintf(stderr, "raylyrics:   -> %s\n",
+                 ranked >= 0 ? ("chose #" + std::to_string(ranked + 1)).c_str()
+                             : "no candidate passed the match gates");
+    return ranked;
 }
 
 int RunCacheCommand(int argc, char** argv) {

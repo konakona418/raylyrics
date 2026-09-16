@@ -73,7 +73,10 @@ add_executable(raylyrics
   src/lyrics/encoding.cpp
   src/lyrics/lrc.cpp
   src/lyrics/lrclib.cpp
+  src/lyrics/match.cpp
+  src/lyrics/title_grammar.cpp
   src/media/mpris.cpp
+  src/media/player_selection.cpp
   src/plugin/effects.cpp
   src/plugin/plugin.cpp
   src/render/text.cpp
