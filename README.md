@@ -369,27 +369,30 @@ click-through, but a preset can call `f:input_region(x, y, w, h)` each frame to
 keep only its visible content interactive — the rest of the surface still passes
 clicks to the window below. Without such a call the whole surface takes input.
 
-The surface moves by adjusting the margins of the anchored edges. Two details
-matter, and getting either wrong makes the drag spring back or bounce:
+The surface is then anchored **top-left** and positioned by its left/top margins,
+which are absolute output coordinates. (Anchoring two opposite edges instead lets
+the compositor derive a width from the margins and reconfigure the surface: KWin
+shrinks a 1600px surface to 640.) The configured `anchor`/`margin` are translated
+into the position they already meant, so the initial look is unchanged.
 
-- **Measure from the press, not per event.** Motion coordinates are
-  surface-local, so as soon as the surface follows the pointer the reading
-  settles back to the press-time origin by itself. Each step is
-  `current_reading - press_reading` applied to the current margins; accumulating
-  per-event deltas counts the settling twice.
-- **Apply once per frame.** The compositor moves the surface a frame after the
-  commit, so readings taken in between are measured against a stale position.
-  Applying per event (a fast mouse delivers several per frame) overshoots and
-  the surface bounces; the drag is applied in the frame's dispatch instead.
+Three details make the drag behave, and getting any of them wrong shows up as a
+spring-back, a drift, or a surface that cannot reach the edge:
 
-An axis that is centered (neither edge anchored) gets a *single* edge anchored
-at the position the surface already occupies on the first drag along it —
-anchoring both would let the compositor derive a width from the margins and
-reconfigure the surface (KWin shrinks a 1600px surface to 640). If the surface
-lags enough for the pointer to slip out, the drag re-anchors and resumes on
-re-entry rather than cancelling. Margins are clamped so the surface stays on the
-output, and the position is not saved: a restart returns to the declared
-`anchor`/`margin`.
+- **Measure from the press.** Motion coordinates are surface-local, so as soon as
+  the surface follows the pointer the reading settles back to the press-time
+  origin by itself. Each step is `current_reading - press_reading`; accumulating
+  per-event deltas counts that settling twice.
+- **Apply once per frame, and only when a reading arrived.** The compositor
+  applies a margin change a frame later, so per-event application overshoots
+  badly (measured -848px on a -100px drag). Applying every frame regardless
+  instead drifts: with a stationary pointer the same stale delta is re-added
+  forever and the surface flies off.
+- **Clamp the interactive rectangle, not the surface.** The visible panel is
+  smaller than the transparent surface, so clamping the surface stops the panel
+  short of the screen edge. Keeping `f:input_region`'s rectangle on the output
+  lets the panel reach the edge and stops it leaving.
+
+The position is not saved: a restart returns to the declared `anchor`/`margin`.
 
 ### Hot reload
 

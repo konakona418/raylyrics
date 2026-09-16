@@ -52,6 +52,7 @@ struct rl_wl_state {
     int pointer_inside;
     int button_down;
     int dragging;
+    int drag_pending;
     int drag_origin_x;
     int drag_origin_y;
 
@@ -95,6 +96,11 @@ static int g_requested_height = 0;
 
 /* Pointer dragging of the surface (preset-declared). */
 static int g_draggable = 0;
+
+/* The interactive rectangle the preset declared, in surface coordinates; the
+ * drag clamp keeps it on the output rather than the (larger) surface. */
+static int g_input_rect_valid = 0;
+static int g_input_rect[4] = {0, 0, 0, 0};
 
 /* The live surface, so runtime helpers do not need it threaded through. */
 static struct rl_wl_state *g_state = NULL;
@@ -251,13 +257,16 @@ static void pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time
     (void)pointer;
     (void)time;
     struct rl_wl_state *state = data;
-    // Only remember the latest reading. Motion reports surface-local
-    // coordinates, and the compositor applies a margin change a frame later, so
-    // readings taken between our commits are measured against a stale surface
-    // position; applying per event made the surface overshoot and bounce.
-    // rl_wl_dispatch() applies once per frame, when the previous move has landed.
+    // Only remember the latest reading, and mark that there is one to apply.
+    // Motion reports surface-local coordinates, and the compositor applies a
+    // margin change a frame later, so readings taken between our commits are
+    // measured against a stale surface position; applying per event overshoots
+    // badly (measured -848px on a -100px drag). rl_wl_dispatch() applies once
+    // per frame instead — but only when a reading has actually arrived, or a
+    // stationary pointer would keep moving the surface.
     state->pointer_x = wl_fixed_to_int(sx);
     state->pointer_y = wl_fixed_to_int(sy);
+    state->drag_pending = 1;
 }
 
 static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t serial, uint32_t time,
@@ -509,6 +518,38 @@ rl_wl_state *rl_wl_create(int width, int height) {
         if (requested_height <= 0 && output_height > 0) state->height = output_height;
     }
 
+    if (g_draggable) {
+        // Position by top-left margins, so a drag has absolute coordinates and
+        // the compositor never derives a size from two opposite anchors. The
+        // configured anchor is translated into the position it already meant.
+        int output_width = 0;
+        int output_height = 0;
+        resolve_output_size(state, &output_width, &output_height);
+
+        int x = 0;
+        int y = 0;
+        if (g_anchor & RL_WL_ANCHOR_LEFT) {
+            x = g_margin_left;
+        } else if (g_anchor & RL_WL_ANCHOR_RIGHT) {
+            x = output_width - state->width - g_margin_right;
+        } else {
+            x = (output_width - state->width) / 2;
+        }
+        if (g_anchor & RL_WL_ANCHOR_TOP) {
+            y = g_margin_top;
+        } else if (g_anchor & RL_WL_ANCHOR_BOTTOM) {
+            y = output_height - state->height - g_margin_bottom;
+        } else {
+            y = (output_height - state->height) / 2;
+        }
+
+        g_anchor = RL_WL_ANCHOR_TOP | RL_WL_ANCHOR_LEFT;
+        g_margin_left = x;
+        g_margin_top = y;
+        g_margin_right = 0;
+        g_margin_bottom = 0;
+    }
+
     state->surface = wl_compositor_create_surface(state->compositor);
     wl_surface_add_listener(state->surface, &surface_listener, state);
     wl_surface_set_buffer_scale(state->surface, 1);
@@ -638,8 +679,9 @@ int rl_wl_swap(rl_wl_state *state) {
     return 0;
 }
 
-/* Move the surface by adjusting the margins of the anchored edges. The surface
- * keeps its size, so only the position changes. */
+/* Move the surface. It is top-left anchored when draggable, so the left/top
+ * margins are its position in output coordinates. The visible panel, not the
+ * (larger, mostly transparent) surface, is what must stay on the output. */
 static void apply_drag(struct rl_wl_state *state, int dx, int dy) {
     if (dx == 0 && dy == 0) return;
 
@@ -649,43 +691,23 @@ static void apply_drag(struct rl_wl_state *state, int dx, int dy) {
     const int max_x = output_width > 0 ? output_width : 100000;
     const int max_y = output_height > 0 ? output_height : 100000;
 
-    // A centered axis (neither edge anchored) ignores its margins, so it cannot
-    // be dragged. Anchor a single edge at the position the surface already
-    // occupies: anchoring both would let the compositor derive a width from the
-    // margins and reconfigure the surface, which it does (1600 -> 640 on KWin).
-    if (dx != 0 && !(g_anchor & (RL_WL_ANCHOR_LEFT | RL_WL_ANCHOR_RIGHT))) {
-        g_anchor |= RL_WL_ANCHOR_LEFT;
-        g_margin_left = (max_x - state->fixed_width) / 2;
-        zwlr_layer_surface_v1_set_anchor(state->layer_surface, (uint32_t)g_anchor);
-        zwlr_layer_surface_v1_set_size(state->layer_surface, (uint32_t)state->fixed_width,
-                                       (uint32_t)state->fixed_height);
-    }
-    if (dy != 0 && !(g_anchor & (RL_WL_ANCHOR_TOP | RL_WL_ANCHOR_BOTTOM))) {
-        g_anchor |= RL_WL_ANCHOR_TOP;
-        g_margin_top = (max_y - state->fixed_height) / 2;
-        zwlr_layer_surface_v1_set_anchor(state->layer_surface, (uint32_t)g_anchor);
-        zwlr_layer_surface_v1_set_size(state->layer_surface, (uint32_t)state->fixed_width,
-                                       (uint32_t)state->fixed_height);
-    }
+    int x = g_margin_left + dx;
+    int y = g_margin_top + dy;
 
-    if (dx != 0) {
-        if (g_anchor & RL_WL_ANCHOR_LEFT) g_margin_left += dx;
-        if (g_anchor & RL_WL_ANCHOR_RIGHT) g_margin_right -= dx;
-    }
-    if (dy != 0) {
-        if (g_anchor & RL_WL_ANCHOR_TOP) g_margin_top += dy;
-        if (g_anchor & RL_WL_ANCHOR_BOTTOM) g_margin_bottom -= dy;
-    }
+    // Keep the interactive rectangle on the output. Without one, fall back to
+    // the surface, which is the best guess available.
+    const int keep_x = g_input_rect_valid ? g_input_rect[0] : 0;
+    const int keep_y = g_input_rect_valid ? g_input_rect[1] : 0;
+    const int keep_w = g_input_rect_valid ? g_input_rect[2] : state->fixed_width;
+    const int keep_h = g_input_rect_valid ? g_input_rect[3] : state->fixed_height;
 
-    // Keep at least part of the surface on the output.
-    if (g_margin_left < 0) g_margin_left = 0;
-    if (g_margin_right < 0) g_margin_right = 0;
-    if (g_margin_top < 0) g_margin_top = 0;
-    if (g_margin_bottom < 0) g_margin_bottom = 0;
-    if (g_margin_left > max_x) g_margin_left = max_x;
-    if (g_margin_right > max_x) g_margin_right = max_x;
-    if (g_margin_top > max_y) g_margin_top = max_y;
-    if (g_margin_bottom > max_y) g_margin_bottom = max_y;
+    if (x + keep_x < 0) x = -keep_x;
+    if (x + keep_x + keep_w > max_x) x = max_x - keep_x - keep_w;
+    if (y + keep_y < 0) y = -keep_y;
+    if (y + keep_y + keep_h > max_y) y = max_y - keep_y - keep_h;
+
+    g_margin_left = x;
+    g_margin_top = y;
 
     zwlr_layer_surface_v1_set_margin(state->layer_surface, g_margin_top, g_margin_right,
                                      g_margin_bottom, g_margin_left);
@@ -721,7 +743,8 @@ int rl_wl_dispatch(rl_wl_state *state) {
     // Apply the drag once per frame: the compositor has had a frame to move the
     // surface, so the pointer reading is measured against the position we last
     // committed rather than a stale one.
-    if (state->dragging) {
+    if (state->dragging && state->drag_pending) {
+        state->drag_pending = 0;
         apply_drag(state, state->pointer_x - state->drag_origin_x,
                    state->pointer_y - state->drag_origin_y);
     }
@@ -734,12 +757,18 @@ int rl_wl_should_close(const rl_wl_state *state) {
 }
 
 void rl_wl_set_input_rect(int x, int y, int width, int height) {
+    g_input_rect[0] = x;
+    g_input_rect[1] = y;
+    g_input_rect[2] = width;
+    g_input_rect[3] = height;
+    g_input_rect_valid = width > 0 && height > 0;
+
     struct rl_wl_state *state = g_state;
     if (state == NULL || state->compositor == NULL || state->surface == NULL) return;
 
     struct wl_region *region = wl_compositor_create_region(state->compositor);
     if (region == NULL) return;
-    if (width > 0 && height > 0) wl_region_add(region, x, y, width, height);
+    if (g_input_rect_valid) wl_region_add(region, x, y, width, height);
     wl_surface_set_input_region(state->surface, region);
     wl_region_destroy(region);
     wl_surface_commit(state->surface);
