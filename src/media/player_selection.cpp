@@ -10,8 +10,8 @@ double PlayingSince(const std::map<std::string, double>& history, const std::str
     return it == history.end() ? -1.0 : it->second;
 }
 
-// Rank a followable candidate: metadata first, then recency, then whether it is
-// playing, then continuity.
+// Rank a followable candidate: metadata first, then whether it is playing, then
+// continuity, and only then recency.
 //
 // A source that names no performer cannot match anything, so it must not win on
 // being the one currently playing: a browser exposes its own MPRIS service
@@ -19,6 +19,10 @@ double PlayingSince(const std::map<std::string, double>& history, const std::str
 // carries the raw tab title with an empty artist while reporting a *different*
 // media session as playing. Richness first keeps the overlay on the source that
 // can actually be matched, and makes the choice stable across play/pause.
+//
+// Recency sits below playing and continuity on purpose: a second player that
+// merely *starts* playing must not take the overlay away from the one being
+// followed. It only wins once the current player stops (or goes away).
 std::tuple<int, int, int, int, int> Score(const PlayerSnapshot& player,
                                           const std::map<std::string, double>& history,
                                           const std::string& current) {
@@ -27,8 +31,8 @@ std::tuple<int, int, int, int, int> Score(const PlayerSnapshot& player,
     const bool started_more_recently =
         current_started >= 0.0 && candidate_started >= 0.0 &&
         candidate_started - current_started > PlayerSelector::kRecentPlayerMargin;
-    return {player.has_artist ? 1 : 0, started_more_recently ? 1 : 0, player.playing ? 1 : 0,
-            player.has_title ? 1 : 0, player.bus_name == current ? 1 : 0};
+    return {player.has_artist ? 1 : 0, player.playing ? 1 : 0, player.bus_name == current ? 1 : 0,
+            started_more_recently ? 1 : 0, player.has_title ? 1 : 0};
 }
 
 }  // namespace

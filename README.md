@@ -172,11 +172,12 @@ runs. Among the players that report a track, the richest wins, ranked by:
    tab title with an empty artist (and may report a *different* media session as
    the playing one). A source that names no performer cannot be matched, so it
    never outranks one that does, not even by being the one playing;
-2. **started playing more than 1s later** than the current player — two services
-   that wrap the same playback announce themselves moments apart;
-3. is playing;
-4. has a title;
-5. is the current player.
+2. is playing;
+3. is the current player — so a second player that merely starts playing does not
+   take the overlay away from the one being followed;
+4. started playing more than 1s later than the current player — two services that
+   wrap the same playback announce themselves moments apart;
+5. has a title.
 
 Richness outranking "is playing" is what makes the choice stable: with both
 services reporting, the overlay does not flip on every play/pause. A player that
