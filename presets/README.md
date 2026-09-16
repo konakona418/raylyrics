@@ -16,6 +16,7 @@ persistent `state` table. `common.lua` is a shared module loaded with
 | `slide.lua` | New line slides up and fades in |
 | `wave.lua` | Per-character sine wave |
 | `prism.lua` | Fullscreen rainbow: characters on a screen-filling grid, particles, rotating polygon outlines, bloom |
+| `kuronuri.lua` | Three lines on a white sheet at a time; a censor's bar sweeps each one out as it is sung, with bloom, scanlines and a sideways shiver while the bar crosses |
 | `layeronly.lua` | Minimal `layer` example |
 
 ## Declarations

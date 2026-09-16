@@ -353,7 +353,14 @@ struct PluginHost::Impl {
     }
 
     static void SetUniform(Shader& shader, const Uniform& uniform) {
-        const int uloc = GetShaderLocation(shader, uniform.name.c_str());
+        // Presets name uniforms the way the shader reads them, which is with the
+        // u_ prefix the built-in effects use ("amount" for `uniform float
+        // u_amount`). Accept the bare name too so both spellings bind.
+        int uloc = GetShaderLocation(shader, uniform.name.c_str());
+        if (uloc < 0) {
+            const std::string prefixed = "u_" + uniform.name;
+            uloc = GetShaderLocation(shader, prefixed.c_str());
+        }
         if (uloc < 0) return;
         switch (uniform.count) {
             case 1:
