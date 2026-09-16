@@ -369,16 +369,26 @@ click-through, but a preset can call `f:input_region(x, y, w, h)` each frame to
 keep only its visible content interactive — the rest of the surface still passes
 clicks to the window below. Without such a call the whole surface takes input.
 
-The surface moves by adjusting the margins of the anchored edges. Drag steps are
-measured from the pointer reading captured at the press, not accumulated: motion
-coordinates are surface-local, so once the surface has followed the pointer the
-reading settles back to that origin by itself, and accumulating would count the
-settling twice and make the surface spring back. An axis that is centered
-(neither edge anchored) gets a single edge anchored at the position the surface
-already occupies on the first drag along it — anchoring *both* would let the
-compositor derive a width from the margins and reconfigure the surface (KWin
-shrinks a 1600px surface to 640). Margins are clamped so the surface stays on
-the output, and the position is not saved: a restart returns to the declared
+The surface moves by adjusting the margins of the anchored edges. Two details
+matter, and getting either wrong makes the drag spring back or bounce:
+
+- **Measure from the press, not per event.** Motion coordinates are
+  surface-local, so as soon as the surface follows the pointer the reading
+  settles back to the press-time origin by itself. Each step is
+  `current_reading - press_reading` applied to the current margins; accumulating
+  per-event deltas counts the settling twice.
+- **Apply once per frame.** The compositor moves the surface a frame after the
+  commit, so readings taken in between are measured against a stale position.
+  Applying per event (a fast mouse delivers several per frame) overshoots and
+  the surface bounces; the drag is applied in the frame's dispatch instead.
+
+An axis that is centered (neither edge anchored) gets a *single* edge anchored
+at the position the surface already occupies on the first drag along it —
+anchoring both would let the compositor derive a width from the margins and
+reconfigure the surface (KWin shrinks a 1600px surface to 640). If the surface
+lags enough for the pointer to slip out, the drag re-anchors and resumes on
+re-entry rather than cancelling. Margins are clamped so the surface stays on the
+output, and the position is not saved: a restart returns to the declared
 `anchor`/`margin`.
 
 ### Hot reload

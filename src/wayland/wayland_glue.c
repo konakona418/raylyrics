@@ -49,6 +49,8 @@ struct rl_wl_state {
     struct wl_pointer *pointer;
     int pointer_x;
     int pointer_y;
+    int pointer_inside;
+    int button_down;
     int dragging;
     int drag_origin_x;
     int drag_origin_y;
@@ -224,6 +226,14 @@ static void pointer_enter(void *data, struct wl_pointer *pointer, uint32_t seria
     struct rl_wl_state *state = data;
     state->pointer_x = wl_fixed_to_int(sx);
     state->pointer_y = wl_fixed_to_int(sy);
+    state->pointer_inside = 1;
+    // A surface that lags can let the pointer slip out mid-drag; resume from
+    // where it came back rather than cancelling the gesture.
+    if (state->button_down) {
+        state->drag_origin_x = state->pointer_x;
+        state->drag_origin_y = state->pointer_y;
+        state->dragging = 1;
+    }
 }
 
 static void pointer_leave(void *data, struct wl_pointer *pointer, uint32_t serial,
@@ -232,6 +242,7 @@ static void pointer_leave(void *data, struct wl_pointer *pointer, uint32_t seria
     (void)serial;
     (void)surface;
     struct rl_wl_state *state = data;
+    state->pointer_inside = 0;
     state->dragging = 0;
 }
 
@@ -240,18 +251,13 @@ static void pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time
     (void)pointer;
     (void)time;
     struct rl_wl_state *state = data;
-    const int x = wl_fixed_to_int(sx);
-    const int y = wl_fixed_to_int(sy);
-    if (state->dragging) {
-        // Motion reports surface-local coordinates, and the surface moves under
-        // the pointer as we drag, so an accumulated delta double-counts and the
-        // surface springs back. Measure from the press-time reading instead:
-        // once the surface has followed, the local reading settles back to that
-        // origin, so the next step contributes only the pointer's own movement.
-        apply_drag(state, x - state->drag_origin_x, y - state->drag_origin_y);
-    }
-    state->pointer_x = x;
-    state->pointer_y = y;
+    // Only remember the latest reading. Motion reports surface-local
+    // coordinates, and the compositor applies a margin change a frame later, so
+    // readings taken between our commits are measured against a stale surface
+    // position; applying per event made the surface overshoot and bounce.
+    // rl_wl_dispatch() applies once per frame, when the previous move has landed.
+    state->pointer_x = wl_fixed_to_int(sx);
+    state->pointer_y = wl_fixed_to_int(sy);
 }
 
 static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t serial, uint32_t time,
@@ -262,10 +268,12 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
     struct rl_wl_state *state = data;
     if (button != BTN_LEFT) return;
     if (button_state == WL_POINTER_BUTTON_STATE_PRESSED) {
-        state->dragging = 1;
+        state->button_down = 1;
+        state->dragging = state->pointer_inside;
         state->drag_origin_x = state->pointer_x;
         state->drag_origin_y = state->pointer_y;
     } else {
+        state->button_down = 0;
         state->dragging = 0;
     }
 }
@@ -633,6 +641,8 @@ int rl_wl_swap(rl_wl_state *state) {
 /* Move the surface by adjusting the margins of the anchored edges. The surface
  * keeps its size, so only the position changes. */
 static void apply_drag(struct rl_wl_state *state, int dx, int dy) {
+    if (dx == 0 && dy == 0) return;
+
     int output_width = 0;
     int output_height = 0;
     resolve_output_size(state, &output_width, &output_height);
@@ -707,6 +717,14 @@ int rl_wl_dispatch(rl_wl_state *state) {
     }
 
     if (wl_display_dispatch_pending(state->display) < 0) return -1;
+
+    // Apply the drag once per frame: the compositor has had a frame to move the
+    // surface, so the pointer reading is measured against the position we last
+    // committed rather than a stale one.
+    if (state->dragging) {
+        apply_drag(state, state->pointer_x - state->drag_origin_x,
+                   state->pointer_y - state->drag_origin_y);
+    }
 
     return 0;
 }
