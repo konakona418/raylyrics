@@ -10,7 +10,7 @@ persistent `state` table. `common.lua` is a shared module loaded with
 
 | File | Description |
 | --- | --- |
-| `default.lua` | Default look: current line + next line + bloom (used by `preset = "default"`) |
+| `default.lua` | Default look: current line + next line + bloom, draggable (used by `preset = "default"`) |
 | `glow.lua` | Current and next line with a bloom glow |
 | `boxed.lua` | Translucent bar behind the text |
 | `slide.lua` | New line slides up and fades in |
