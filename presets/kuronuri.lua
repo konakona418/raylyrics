@@ -4,13 +4,14 @@
 -- the sheet through the lyrics in blocks of three. Once a line is about half
 -- sung a censor's bar sweeps it out from the left, and the block hands over the
 -- moment the last of its three bars lands - not when the song reaches the next
--- line - so the sheet never sits fully censored waiting for the lyrics. While a
--- bar crosses the sheet shivers sideways along its scanlines, on top of a steady
--- chroma split, bloom and scanlines.
+-- line - so the sheet never sits fully censored waiting for the lyrics.
 --
--- The crossing is sized from the line - a longer line takes longer to cover -
--- and clamped, and it eases out exponentially rather than sliding at a constant
--- rate.
+-- The handover is a roll: the spent block slides up and out while the next one
+-- comes up from below, eased at both ends so it settles rather than stopping.
+-- The sheet itself is a fixed size, so only the words move.
+--
+-- While a bar crosses the sheet shivers sideways along its scanlines, on top of
+-- a steady chroma split, bloom and scanlines.
 --
 -- A timestamped blank line is an interlude, not a lyric, so it does not take up
 -- one of the three slots.
@@ -18,10 +19,12 @@
 -- draggable: the sheet is the drag handle, the rest of the surface stays
 -- click-through.
 
-local PAD_X, PAD_Y = 34, 26
-local MIN_INNER_W = 380  -- keep the sheet looking like a sheet for short lines
+local PAD_X, PAD_Y = 34, 30
 local ROW_GAP = 14
-local EDGE = 16          -- smallest gap between the sheet and the surface edge
+local BAR_PAD = 3        -- a bar overhangs its line a little at both ends
+
+local SLIDE_TIME = 0.30  -- how long the roll takes
+local SLIDE_EXP = 5.0    -- exponential ease-in-out rate for the roll
 
 local SWEEP_PER_PX = 0.0009  -- seconds of sweep per pixel of line width
 local SWEEP_MIN = 0.35
@@ -60,6 +63,16 @@ local function sweep(pos, start, duration)
   if x <= 0.0 then return 0.0 end
   if x >= 1.0 then return 1.0 end
   return (1.0 - 2.0 ^ (-SWEEP_EXP * x)) / (1.0 - 2.0 ^ -SWEEP_EXP)
+end
+
+-- Eased at both ends, exponentially: the roll creeps away, gathers, and settles
+-- onto the next block rather than starting and stopping dead.
+local function ease_in_out(x)
+  if x <= 0.0 then return 0.0 end
+  if x >= 1.0 then return 1.0 end
+  local span = 2.0 ^ SLIDE_EXP - 1.0
+  if x < 0.5 then return 0.5 * (2.0 ^ (2.0 * SLIDE_EXP * x) - 1.0) / span end
+  return 1.0 - 0.5 * (2.0 ^ (2.0 * SLIDE_EXP * (1.0 - x)) - 1.0) / span
 end
 
 -- Everything about line `i`'s bar: how wide the line is, when the bar arrives
@@ -180,11 +193,19 @@ return {
       if last == nil or pos < last.finish then break end
       block = block + 3
     end
-    state.block = block
+
+    -- Handing over: remember what is leaving, and start the roll.
+    if state.block ~= block or state.slide_at == nil then
+      state.prev = state.widths
+      state.slide_at = pos
+      state.block = block
+    end
 
     local row_h = f:measure("Ag").line_height
+    local row_step = row_h + ROW_GAP
+    local block_h = row_step * 3 - ROW_GAP
 
-    local rows, redact = {}, {}
+    local rows, redact, widths = {}, {}, {}
     local text_w = 0
     for k = 0, 2 do
       local index = block + k
@@ -193,20 +214,30 @@ return {
       local text = entry and entry.text or ""
       local width = timing and timing.width or 0
       rows[k + 1] = { text = text, width = width }
+      widths[k + 1] = width
       if width > text_w then text_w = width end
       redact[k + 1] = timing and sweep(pos, timing.begin, timing.duration) or 0.0
     end
+    state.widths = widths
 
-    -- Clamp the sheet to the surface; a line wider than the room is scaled to
-    -- fit rather than spilling past the paper.
-    local avail_w = f.width - 2 * EDGE - PAD_X * 2
-    local inner_w = math.min(math.max(text_w, MIN_INNER_W), avail_w)
+    -- The sheet fills the surface, so a block can roll clean off the top edge
+    -- and the next can come in from below it.
+    local panel_x, panel_y = 0, 0
+    local panel_w = f.width
+    local panel_h = f.height
+    local row_top = panel_y + (panel_h - block_h) * 0.5
+
+    -- Exactly far enough that the outgoing block has cleared the top edge - bars
+    -- and all - as the incoming one arrives from below. The row band is centred,
+    -- so this is the distance from its bottom to the top of the sheet.
+    local travel = (panel_h + block_h) * 0.5 + BAR_PAD
+    local eased = ease_in_out((pos - state.slide_at) / SLIDE_TIME)
+    local lift = travel * eased            -- how far the outgoing block has gone
+    local rise = travel * (1.0 - eased)    -- where the incoming block starts
+
+    -- A line wider than the room is scaled to fit rather than spilling out.
+    local inner_w = panel_w - PAD_X * 2
     local fit = (text_w > inner_w and text_w > 0) and (inner_w / text_w) or 1.0
-
-    local panel_w = inner_w + PAD_X * 2
-    local panel_h = math.min(row_h * 3 + ROW_GAP * 2 + PAD_Y * 2, f.height - 2 * EDGE)
-    local panel_x = (f.width - panel_w) * 0.5
-    local panel_y = (f.height - panel_h) * 0.5
 
     f:input_region(panel_x, panel_y, panel_w, panel_h)
 
@@ -224,24 +255,42 @@ return {
       l:rect({ x = panel_x, y = panel_y, w = panel_w, h = panel_h,
                color = { 1.0, 1.0, 1.0, SHEET_ALPHA } })
 
+      -- The block on its way out is already three solid bars. Drawn for the
+      -- whole roll, first frame included, so the handover never blinks: on that
+      -- frame lift is still 0 and these are simply the bars already on screen.
+      if state.prev and eased < 1.0 then
+        for k = 0, 2 do
+          local width = state.prev[k + 1] or 0
+          if width > 0 then
+            local y = row_top - lift + k * row_step
+            l:rect({ x = panel_x + PAD_X - 4, y = y - BAR_PAD,
+                     w = width * fit + 8, h = row_h + BAR_PAD * 2, color = { 0.0, 0.0, 0.0, 1.0 } })
+          end
+        end
+      end
+
       for k = 0, 2 do
         local row = rows[k + 1]
-        local y = panel_y + PAD_Y + k * (row_h + ROW_GAP)
+        local y = row_top + rise + k * row_step
 
         if row.text ~= "" then
-          l:text(row.text, { anchor = "top-left", offset_x = panel_x + PAD_X,
-                             offset_y = y, color = { 0.0, 0.0, 0.0, 1.0 } },
-                 function(_, glyph)
-                   -- Scale about the left edge so the line keeps its baseline.
-                   return { offset_x = glyph.x * (fit - 1.0), offset_y = 0.0, scale = fit }
-                 end)
+          local options = { anchor = "top-left", offset_x = panel_x + PAD_X,
+                            offset_y = y, color = { 0.0, 0.0, 0.0, 1.0 } }
+          if fit < 1.0 then
+            -- Scale about the left edge so the line keeps its baseline.
+            l:text(row.text, options, function(_, glyph)
+              return { offset_x = glyph.x * (fit - 1.0), offset_y = 0.0, scale = fit }
+            end)
+          else
+            l:text(row.text, options)
+          end
         end
 
         -- The censor's bar sweeps the line from the left.
         local swept = redact[k + 1]
         if swept > 0 and row.width > 0 then
-          l:rect({ x = panel_x + PAD_X - 4, y = y - 3,
-                   w = (row.width * fit + 8) * swept, h = row_h + 6,
+          l:rect({ x = panel_x + PAD_X - 4, y = y - BAR_PAD,
+                   w = (row.width * fit + 8) * swept, h = row_h + BAR_PAD * 2,
                    color = { 0.0, 0.0, 0.0, 1.0 } })
         end
       end
