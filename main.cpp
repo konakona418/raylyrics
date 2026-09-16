@@ -295,6 +295,14 @@ struct RemoteRequest {
     double duration = 0.0;
 };
 
+// Install new lyrics, replacing whatever is on screen. Only ever called with
+// lyrics in hand, so a lookup that finds nothing cannot blank the overlay.
+void ReplaceDoc(LyricsRuntime* runtime, lrc_doc* next) {
+    if (runtime->doc != nullptr) lrc_free(runtime->doc);
+    runtime->doc = next;
+    runtime->doc_serial++;
+}
+
 void OnRemoteLyrics(void* user_data, const lrclib_result* result) {
     auto* request = static_cast<RemoteRequest*>(user_data);
     LyricsRuntime* runtime = request->runtime;
@@ -313,14 +321,16 @@ void OnRemoteLyrics(void* user_data, const lrclib_result* result) {
         if (runtime->cache != nullptr) {
             runtime->cache->Put(artist, title, album, duration, result->synced_lrc, "lrclib");
         }
-        if (runtime->doc != nullptr) lrc_free(runtime->doc);
-        runtime->doc = lrc_parse(result->synced_lrc, std::strlen(result->synced_lrc));
-        runtime->doc_serial++;
-        std::fprintf(stderr, "raylyrics: fetched %s - %s (%zu lines)\n",
-                     result->artist_name != nullptr ? result->artist_name : "?",
-                     result->track_name != nullptr ? result->track_name : "?",
-                     runtime->doc != nullptr ? lrc_line_count(runtime->doc) : 0);
+        lrc_doc* next = lrc_parse(result->synced_lrc, std::strlen(result->synced_lrc));
+        if (next != nullptr) {
+            ReplaceDoc(runtime, next);
+            std::fprintf(stderr, "raylyrics: fetched %s - %s (%zu lines)\n",
+                         result->artist_name != nullptr ? result->artist_name : "?",
+                         result->track_name != nullptr ? result->track_name : "?",
+                         lrc_line_count(next));
+        }
     } else {
+        // Nothing found: leave what is on screen alone rather than clearing it.
         std::fprintf(stderr, "raylyrics: no synced lyrics (HTTP %d)\n", result->status);
     }
 }
@@ -678,11 +688,9 @@ int RunOverlay() {
 
         if (state->generation != runtime.generation) {
             runtime.generation = state->generation;
-            if (runtime.doc != nullptr) {
-                lrc_free(runtime.doc);
-                runtime.doc = nullptr;
-                runtime.doc_serial++;
-            }
+            // Whatever is on screen is left alone here. It is only replaced once
+            // a replacement is in hand, so a switch to a player with no lyrics,
+            // or a lookup that comes back empty, cannot blank the overlay.
 
             raylyrics::PluginMetadata meta;
             meta.artist = state->artist != nullptr ? state->artist : "";
@@ -699,19 +707,20 @@ int RunOverlay() {
                 const double duration_seconds = static_cast<double>(meta.duration_us) / 1e6;
                 const std::string url = state->url != nullptr ? state->url : "";
 
-                runtime.doc = TryLocalLyrics(url, artist, title, config.lyrics_root);
-                if (runtime.doc != nullptr) {
+                lrc_doc* next = TryLocalLyrics(url, artist, title, config.lyrics_root);
+                if (next != nullptr) {
                     std::fprintf(stderr, "raylyrics: local lyrics for %s (%zu lines)\n",
-                                 title.c_str(), lrc_line_count(runtime.doc));
-                    runtime.doc_serial++;
+                                 title.c_str(), lrc_line_count(next));
+                    ReplaceDoc(&runtime, next);
                 } else {
                     std::string cached;
                     if (cache.Get(artist, title, meta.album, duration_seconds, &cached)) {
-                        runtime.doc = lrc_parse(cached.data(), cached.size());
+                        next = lrc_parse(cached.data(), cached.size());
+                    }
+                    if (next != nullptr) {
                         std::fprintf(stderr, "raylyrics: cached lyrics for %s (%zu lines)\n",
-                                     title.c_str(),
-                                     runtime.doc != nullptr ? lrc_line_count(runtime.doc) : 0);
-                        runtime.doc_serial++;
+                                     title.c_str(), lrc_line_count(next));
+                        ReplaceDoc(&runtime, next);
                     } else {
                         runtime.fetching = true;
                         auto* request = new RemoteRequest{&runtime, state->generation};
