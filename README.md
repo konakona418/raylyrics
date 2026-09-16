@@ -274,6 +274,7 @@ the window exists so it can declare its viewport (see below).
 | `f:push() / f:pop() / f:translate(x, y) / f:rotate(deg) / f:scale(s)` | matrix stack |
 | `f:measure(str)` | `{ width, height, line_height, line_count, lines }` (`lines` = per-line widths) |
 | `f:words(str)` | split into segments: `{ { text, index, count, x, width }, ... }` |
+| `f:input_region(x, y, w, h)` | the only part of the surface that takes pointer input this frame |
 | `f:width`, `f:height` | surface size |
 | `f:shader(name, frag) -> bool` | register a custom fullscreen fragment shader |
 | `f:uniforms({...})` | ambient uniforms applied to every layer shader this frame |
@@ -364,12 +365,19 @@ created, so changing them needs a restart. `fps`, `font` and `colors` are
 re-applied on hot reload and on `ctl preset` / `ctl reload`.
 
 With `draggable = true` the surface follows the left mouse button. It gives up
-click-through — the whole surface takes pointer input, so clicks on the overlay
-no longer reach the desktop. The surface moves by adjusting the margins of the
-anchored edges; an axis that is centered (neither edge anchored) is converted to
-a two-edge anchor on the first drag along it, so dragging works regardless of
-the declared anchor. The position is not saved; a restart returns to the
-declared `anchor`/`margin`.
+click-through, but a preset can call `f:input_region(x, y, w, h)` each frame to
+keep only its visible content interactive — the rest of the surface still passes
+clicks to the window below. Without such a call the whole surface takes input.
+
+The surface moves by adjusting the margins of the anchored edges. Drag steps are
+measured from the pointer reading captured at the press, not accumulated: motion
+coordinates are surface-local, so once the surface has followed the pointer the
+reading settles back to that origin by itself, and accumulating would count the
+settling twice and make the surface spring back. An axis that is centered
+(neither edge anchored) is converted to a two-edge anchor on the first drag
+along it, so dragging works whatever the declared anchor. Margins are clamped so
+the surface stays on the output, and the position is not saved: a restart
+returns to the declared `anchor`/`margin`.
 
 ### Hot reload
 

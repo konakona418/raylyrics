@@ -50,8 +50,8 @@ struct rl_wl_state {
     int pointer_x;
     int pointer_y;
     int dragging;
-    int drag_dx;
-    int drag_dy;
+    int drag_origin_x;
+    int drag_origin_y;
 
     struct rl_wl_output outputs[RL_WL_MAX_OUTPUTS];
     int output_count;
@@ -90,6 +90,9 @@ static int g_requested_height = 0;
 
 /* Pointer dragging of the surface (preset-declared). */
 static int g_draggable = 0;
+
+/* The live surface, so runtime helpers do not need it threaded through. */
+static struct rl_wl_state *g_state = NULL;
 
 void rl_wl_set_draggable(int draggable) { g_draggable = draggable ? 1 : 0; }
 
@@ -206,9 +209,10 @@ static const struct wl_surface_listener surface_listener = {
 };
 
 /* Pointer input, only used when rl_wl_set_draggable(1) made the surface
- * interactive. Motion while the left button is held accumulates a delta that
- * rl_wl_dispatch() turns into a margin change, which is how a layer-shell
- * surface moves. */
+ * interactive. Motion while the left button is held moves the surface by its
+ * margins, which is how a layer-shell surface is positioned. */
+static void apply_drag(struct rl_wl_state *state, int dx, int dy);
+
 static void pointer_enter(void *data, struct wl_pointer *pointer, uint32_t serial,
                           struct wl_surface *surface, wl_fixed_t sx, wl_fixed_t sy) {
     (void)pointer;
@@ -236,8 +240,12 @@ static void pointer_motion(void *data, struct wl_pointer *pointer, uint32_t time
     const int x = wl_fixed_to_int(sx);
     const int y = wl_fixed_to_int(sy);
     if (state->dragging) {
-        state->drag_dx += x - state->pointer_x;
-        state->drag_dy += y - state->pointer_y;
+        // Motion reports surface-local coordinates, and the surface moves under
+        // the pointer as we drag, so an accumulated delta double-counts and the
+        // surface springs back. Measure from the press-time reading instead:
+        // once the surface has followed, the local reading settles back to that
+        // origin, so the next step contributes only the pointer's own movement.
+        apply_drag(state, x - state->drag_origin_x, y - state->drag_origin_y);
     }
     state->pointer_x = x;
     state->pointer_y = y;
@@ -250,10 +258,12 @@ static void pointer_button(void *data, struct wl_pointer *pointer, uint32_t seri
     (void)time;
     struct rl_wl_state *state = data;
     if (button != BTN_LEFT) return;
-    state->dragging = button_state == WL_POINTER_BUTTON_STATE_PRESSED ? 1 : 0;
-    if (!state->dragging) {
-        state->drag_dx = 0;
-        state->drag_dy = 0;
+    if (button_state == WL_POINTER_BUTTON_STATE_PRESSED) {
+        state->dragging = 1;
+        state->drag_origin_x = state->pointer_x;
+        state->drag_origin_y = state->pointer_y;
+    } else {
+        state->dragging = 0;
     }
 }
 
@@ -531,6 +541,7 @@ rl_wl_state *rl_wl_create(int width, int height) {
 
     if (init_egl(state) != 0) goto fail;
 
+    g_state = state;
     return state;
 
 fail:
@@ -691,17 +702,23 @@ int rl_wl_dispatch(rl_wl_state *state) {
 
     if (wl_display_dispatch_pending(state->display) < 0) return -1;
 
-    if (state->drag_dx != 0 || state->drag_dy != 0) {
-        apply_drag(state, state->drag_dx, state->drag_dy);
-        state->drag_dx = 0;
-        state->drag_dy = 0;
-    }
-
     return 0;
 }
 
 int rl_wl_should_close(const rl_wl_state *state) {
     return state ? state->closed : 1;
+}
+
+void rl_wl_set_input_rect(int x, int y, int width, int height) {
+    struct rl_wl_state *state = g_state;
+    if (state == NULL || state->compositor == NULL || state->surface == NULL) return;
+
+    struct wl_region *region = wl_compositor_create_region(state->compositor);
+    if (region == NULL) return;
+    if (width > 0 && height > 0) wl_region_add(region, x, y, width, height);
+    wl_surface_set_input_region(state->surface, region);
+    wl_region_destroy(region);
+    wl_surface_commit(state->surface);
 }
 
 void rl_wl_destroy(rl_wl_state *state) {
@@ -725,6 +742,7 @@ void rl_wl_destroy(rl_wl_state *state) {
     if (state->registry) wl_registry_destroy(state->registry);
     if (state->display) wl_display_disconnect(state->display);
 
+    if (g_state == state) g_state = NULL;
     free(state);
 }
 

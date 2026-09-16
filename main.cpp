@@ -602,6 +602,12 @@ int RunOverlay() {
     apply_runtime_setup();
     uint64_t last_reload_serial = plugin.reload_serial();
 
+    // A draggable overlay takes input only where the preset drew something, so
+    // the rest of the surface stays click-through.
+    const bool draggable = setup.has_draggable && setup.draggable;
+    int last_input_rect[4] = {0, 0, 0, 0};
+    bool input_rect_applied = false;
+
     raylyrics::ControlServer control;
     bool hidden = false;
     int64_t lyric_offset_us = 0;
@@ -777,6 +783,25 @@ int RunOverlay() {
         BeginDrawing();
         ClearBackground(BLANK);
         if (!hidden) plugin.RunFrame(ctx);
+
+        if (draggable) {
+            float rect[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+            const bool have_rect = plugin.input_rect(&rect[0], &rect[1], &rect[2], &rect[3]);
+            const int x = static_cast<int>(rect[0]);
+            const int y = static_cast<int>(rect[1]);
+            const int w = have_rect ? static_cast<int>(rect[2]) : 0;
+            const int h = have_rect ? static_cast<int>(rect[3]) : 0;
+            if (!input_rect_applied || x != last_input_rect[0] || y != last_input_rect[1] ||
+                w != last_input_rect[2] || h != last_input_rect[3]) {
+                rl_wl_set_input_rect(x, y, w, h);
+                last_input_rect[0] = x;
+                last_input_rect[1] = y;
+                last_input_rect[2] = w;
+                last_input_rect[3] = h;
+                input_rect_applied = true;
+            }
+        }
+
         EndDrawing();
 
         // Hot reload may have changed fps/font/colors.

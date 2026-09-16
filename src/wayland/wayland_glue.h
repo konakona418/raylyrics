@@ -52,6 +52,11 @@ void rl_wl_set_keyboard(int interactive);
  * rl_wl_create. */
 void rl_wl_set_draggable(int draggable);
 
+/* Restrict pointer input to one rectangle in surface coordinates, so only the
+ * visible content catches clicks and the rest stays click-through. Pass a
+ * non-positive size for no input at all. Only meaningful when draggable. */
+void rl_wl_set_input_rect(int x, int y, int width, int height);
+
 /* Select the output to place the overlay on, by wl_output name (e.g. "DP-1").
  * NULL/empty lets the compositor choose. Must be called before rl_wl_create. */
 void rl_wl_set_output(const char *name);

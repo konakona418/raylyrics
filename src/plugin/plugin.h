@@ -133,6 +133,10 @@ public:
     // SetPreset().
     const PresetSetup& setup() const;
 
+    // Surface-space rectangle the preset asked to accept pointer input this
+    // frame (f:input_region), or false when it asked for none.
+    bool input_rect(float* x, float* y, float* w, float* h) const;
+
     // Bumped on every hot reload, so callers can re-apply setup.
     uint64_t reload_serial() const;
 

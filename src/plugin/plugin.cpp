@@ -299,6 +299,8 @@ struct PluginHost::Impl {
     bool is_default = true;
     PresetSetup setup;
     uint64_t reload_serial = 0;
+    bool input_rect_valid = false;
+    float input_rect[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     int last_line_index = -2;
     uint64_t last_generation = ~0ull;
     std::string preset_path;
@@ -738,6 +740,17 @@ struct PluginHost::Impl {
         frame.set_function("uniforms", [this](sol::table, sol::table table) {
             ambient_uniforms.clear();
             ReadUniforms(table, ambient_uniforms);
+        });
+
+        // The only part of the surface that should catch pointer input, so a
+        // draggable overlay does not swallow clicks meant for the window below.
+        // The preset calls it every frame with its visible content's bounds.
+        frame.set_function("input_region", [this](sol::table, float x, float y, float w, float h) {
+            input_rect_valid = true;
+            input_rect[0] = x;
+            input_rect[1] = y;
+            input_rect[2] = w;
+            input_rect[3] = h;
         });
 
         frame.set_function(
@@ -1335,6 +1348,7 @@ void PluginHost::RunFrame(const PluginContext& ctx) {
 
     impl.commands.Clear();
     impl.ambient_uniforms.clear();
+    impl.input_rect_valid = false;
     impl.frame["width"] = GetScreenWidth();
     impl.frame["height"] = GetScreenHeight();
     impl.frame_time = static_cast<float>(ctx.wall_time);
@@ -1419,5 +1433,14 @@ bool PluginHost::using_default() const { return impl_->is_default; }
 const PresetSetup& PluginHost::setup() const { return impl_->setup; }
 
 uint64_t PluginHost::reload_serial() const { return impl_->reload_serial; }
+
+bool PluginHost::input_rect(float* x, float* y, float* w, float* h) const {
+    if (!impl_->input_rect_valid) return false;
+    if (x != nullptr) *x = impl_->input_rect[0];
+    if (y != nullptr) *y = impl_->input_rect[1];
+    if (w != nullptr) *w = impl_->input_rect[2];
+    if (h != nullptr) *h = impl_->input_rect[3];
+    return true;
+}
 
 }  // namespace raylyrics
