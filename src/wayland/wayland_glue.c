@@ -65,6 +65,9 @@ struct rl_wl_state {
 
     int width;
     int height;
+    // The size we asked for, re-asserted if a compositor reconfigures.
+    int fixed_width;
+    int fixed_height;
     int configured;
     int closed;
 };
@@ -541,6 +544,8 @@ rl_wl_state *rl_wl_create(int width, int height) {
 
     if (init_egl(state) != 0) goto fail;
 
+    state->fixed_width = state->width;
+    state->fixed_height = state->height;
     g_state = state;
     return state;
 
@@ -635,21 +640,22 @@ static void apply_drag(struct rl_wl_state *state, int dx, int dy) {
     const int max_y = output_height > 0 ? output_height : 100000;
 
     // A centered axis (neither edge anchored) ignores its margins, so it cannot
-    // be dragged. Anchor both edges of that axis at the position the surface
-    // already occupies, which makes the margins meaningful.
+    // be dragged. Anchor a single edge at the position the surface already
+    // occupies: anchoring both would let the compositor derive a width from the
+    // margins and reconfigure the surface, which it does (1600 -> 640 on KWin).
     if (dx != 0 && !(g_anchor & (RL_WL_ANCHOR_LEFT | RL_WL_ANCHOR_RIGHT))) {
-        const int centred = (max_x - state->width) / 2;
-        g_anchor |= RL_WL_ANCHOR_LEFT | RL_WL_ANCHOR_RIGHT;
-        g_margin_left = centred;
-        g_margin_right = max_x - state->width - centred;
+        g_anchor |= RL_WL_ANCHOR_LEFT;
+        g_margin_left = (max_x - state->fixed_width) / 2;
         zwlr_layer_surface_v1_set_anchor(state->layer_surface, (uint32_t)g_anchor);
+        zwlr_layer_surface_v1_set_size(state->layer_surface, (uint32_t)state->fixed_width,
+                                       (uint32_t)state->fixed_height);
     }
     if (dy != 0 && !(g_anchor & (RL_WL_ANCHOR_TOP | RL_WL_ANCHOR_BOTTOM))) {
-        const int centred = (max_y - state->height) / 2;
-        g_anchor |= RL_WL_ANCHOR_TOP | RL_WL_ANCHOR_BOTTOM;
-        g_margin_top = centred;
-        g_margin_bottom = max_y - state->height - centred;
+        g_anchor |= RL_WL_ANCHOR_TOP;
+        g_margin_top = (max_y - state->fixed_height) / 2;
         zwlr_layer_surface_v1_set_anchor(state->layer_surface, (uint32_t)g_anchor);
+        zwlr_layer_surface_v1_set_size(state->layer_surface, (uint32_t)state->fixed_width,
+                                       (uint32_t)state->fixed_height);
     }
 
     if (dx != 0) {

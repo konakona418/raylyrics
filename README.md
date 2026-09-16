@@ -374,10 +374,12 @@ measured from the pointer reading captured at the press, not accumulated: motion
 coordinates are surface-local, so once the surface has followed the pointer the
 reading settles back to that origin by itself, and accumulating would count the
 settling twice and make the surface spring back. An axis that is centered
-(neither edge anchored) is converted to a two-edge anchor on the first drag
-along it, so dragging works whatever the declared anchor. Margins are clamped so
-the surface stays on the output, and the position is not saved: a restart
-returns to the declared `anchor`/`margin`.
+(neither edge anchored) gets a single edge anchored at the position the surface
+already occupies on the first drag along it — anchoring *both* would let the
+compositor derive a width from the margins and reconfigure the surface (KWin
+shrinks a 1600px surface to 640). Margins are clamped so the surface stays on
+the output, and the position is not saved: a restart returns to the declared
+`anchor`/`margin`.
 
 ### Hot reload
 
