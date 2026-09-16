@@ -55,7 +55,7 @@ inline constexpr const char kVertShaderCode[] =
   "out vec4       v_color;\n"
   "void SlugUnpack(vec4 tex, vec4 bnd, out vec4 vbnd, out ivec4 vgly) {\n"
   "  uvec2 g = floatBitsToUint(tex.zw);\n"
-  "  vgly    = ivec4(int(g.x & 0xFFFFu), int(g.x >> 16u), int(g.y & 0xFFFFu), int(g.y >> 16u));\n"
+  "  vgly    = ivec4(int(g.y), int(g.x), 0, 0);\n"
   "  vbnd    = bnd;\n"
   "}\n"
   "vec2 SlugDilate(vec4 pos, vec4 tex, vec4 jac, vec4 m0, vec4 m1, vec4 m3, vec2 dim, out vec2 vpos) {\n"
@@ -154,13 +154,13 @@ inline constexpr const char kFragShaderCode[] =
   "  if (abs(a.x) < 1.0 / 65536.0) t1 = t2 = p12.x * rb;\n"
   "  return vec2((a.y * t1 - b.y * 2.0) * t1 + p12.y, (a.y * t2 - b.y * 2.0) * t2 + p12.y);\n"
   "}\n"
-  "float CalcCoverage(float xcov, float ycov, float xwgt, float ywgt, int flags) {\n"
+  "float CalcCoverage(float xcov, float ycov, float xwgt, float ywgt) {\n"
   "  float coverage = max(abs(xcov * xwgt + ycov * ywgt) / max(xwgt + ywgt, 1.0 / 65536.0), min(abs(xcov), abs(ycov)));\n"
   "  return clamp(coverage, 0.0, 1.0);\n"
   "}\n"
   "void main() {\n"
   "  vec2  pixelsPerEm = 1.0 / fwidth(v_texcoord);\n"
-  "  ivec2 bandMax     = ivec2(v_glyph.z & 0x00FF, (v_glyph.z >> 8) & 0x00FF);\n"
+  "  ivec2 bandMax     = ivec2(kBandSplits - 1, kBandSplits - 1);\n"
   "  ivec2 bandIndex = clamp(ivec2(v_texcoord * v_banding.xy + v_banding.zw), ivec2(0), bandMax);\n"
   "  uint  glyphBase = uint(v_glyph.x);// glyph band data offset\n"
   "  uint hMetaIdx    = glyphBase + (kBandSplits + uint(bandIndex.y)) * 2u;\n"
@@ -209,7 +209,7 @@ inline constexpr const char kFragShaderCode[] =
   "      }\n"
   "    }\n"
   "  }\n"
-  "  fragColor = v_color * CalcCoverage(xcov, ycov, xwgt, ywgt, v_glyph.w);\n"
+  "  fragColor = v_color * CalcCoverage(xcov, ycov, xwgt, ywgt);\n"
   "}\n";
 
 struct SlugFont {
@@ -487,8 +487,6 @@ struct SlugFont {
 
       uint32_t             curveOffset,
       uint32_t             bandOffset,
-      uint16_t             maxBandX,
-      uint16_t             maxBandY,
       std::array<float, 4> inverseJacobian,
 
       std::array<float, 4> bandParams,
@@ -503,12 +501,15 @@ struct SlugFont {
       vert.tex[0] = u;
       vert.tex[1] = v;
 
-      uint32_t packedZ = (curveOffset & 0xFFFF) << 16 | (bandOffset & 0xFFFF);
-      memcpy(&vert.tex[2], &packedZ, 4);
-
-      uint32_t flags   = 0;
-      uint32_t packedW = (flags << 24) | ((maxBandY & 0xFF) << 8) | (maxBandX & 0xFF);
-      memcpy(&vert.tex[3], &packedW, 4);
+      // Both offsets are absolute indices into their SSBOs, so they grow with
+      // the number of glyphs in the font subset and can exceed 16 bits. Keep
+      // each one whole: tex.z is the curve offset, tex.w the band offset. The
+      // band count is the compile-time kBandSplits, so nothing else needs to
+      // travel per vertex.
+      uint32_t curveBits = curveOffset;
+      uint32_t bandBits  = bandOffset;
+      memcpy(&vert.tex[2], &curveBits, 4);
+      memcpy(&vert.tex[3], &bandBits, 4);
 
       vert.jac[0] = inverseJacobian[0];
       vert.jac[1] = inverseJacobian[1];
@@ -643,7 +644,7 @@ struct SlugFont {
         x, y, -1, -1,
         glyph.bounds.x, glyph.bounds.y + height,
         curveOffset, bandOffset,
-        kBandSplits - 1, kBandSplits - 1, inverseJacobian,
+        inverseJacobian,
         {glyph.bandScaleV, glyph.bandScaleH, glyph.bandOffsetV, glyph.bandOffsetH},
         tint),
       SlugVertex::Create(
@@ -651,7 +652,7 @@ struct SlugFont {
         1, -1,
         glyph.bounds.x + width, glyph.bounds.y + height,
         curveOffset, bandOffset,
-        kBandSplits - 1, kBandSplits - 1, inverseJacobian,
+        inverseJacobian,
         {glyph.bandScaleV, glyph.bandScaleH, glyph.bandOffsetV, glyph.bandOffsetH},
         tint),
       SlugVertex::Create(
@@ -659,7 +660,7 @@ struct SlugFont {
         1, 1,
         glyph.bounds.x + width, glyph.bounds.y,
         curveOffset, bandOffset,
-        kBandSplits - 1, kBandSplits - 1, inverseJacobian,
+        inverseJacobian,
         {glyph.bandScaleV, glyph.bandScaleH, glyph.bandOffsetV, glyph.bandOffsetH},
         tint),
       SlugVertex::Create(
@@ -667,7 +668,7 @@ struct SlugFont {
         -1, 1,
         glyph.bounds.x, glyph.bounds.y,
         curveOffset, bandOffset,
-        kBandSplits - 1, kBandSplits - 1, inverseJacobian,
+        inverseJacobian,
         {glyph.bandScaleV, glyph.bandScaleH, glyph.bandOffsetV, glyph.bandOffsetH},
         tint),
     };
