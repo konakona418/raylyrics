@@ -117,6 +117,72 @@ bool IsNumber(const sol::object& object) {
     return object.is<float>() || object.is<double>() || object.is<int>();
 }
 
+bool IsCjkCodepoint(int cp) {
+    return (cp >= 0x3040 && cp <= 0x30FF) ||    // kana
+           (cp >= 0x3400 && cp <= 0x4DBF) ||    // CJK ext A
+           (cp >= 0x4E00 && cp <= 0x9FFF) ||    // CJK unified
+           (cp >= 0xF900 && cp <= 0xFAFF) ||    // compatibility ideographs
+           (cp >= 0xAC00 && cp <= 0xD7AF) ||    // Hangul syllables
+           (cp >= 0x20000 && cp <= 0x2FA1F);    // CJK ext B..F
+}
+
+bool IsSpaceCodepoint(int cp) {
+    return cp == ' ' || cp == '\t' || cp == '\n' || cp == '\r' || cp == 0x3000;
+}
+
+bool IsPunctuationCodepoint(int cp) {
+    if (cp < 0x80) {
+        return (cp >= 0x21 && cp <= 0x2F) || (cp >= 0x3A && cp <= 0x40) ||
+               (cp >= 0x5B && cp <= 0x60) || (cp >= 0x7B && cp <= 0x7E);
+    }
+    return (cp >= 0x3000 && cp <= 0x303F) || (cp >= 0xFF01 && cp <= 0xFF65);
+}
+
+bool IsApostrophe(int cp) { return cp == '\'' || cp == 0x2018 || cp == 0x2019; }
+
+// Characters that never start a segment: the long vowel mark, iteration marks,
+// small kana and the moraic nasal. Breaking before them would separate a long
+// vowel (or a contracted sound) from the syllable it belongs to.
+bool IsNoBreakBefore(int cp) {
+    switch (cp) {
+        case 0x30FC:  // ー
+        case 0x3005:  // 々
+        case 0x309D:
+        case 0x309E:
+        case 0x30FD:
+        case 0x30FE:
+        case 0x3041: case 0x3043: case 0x3045: case 0x3047: case 0x3049:
+        case 0x3063: case 0x3083: case 0x3085: case 0x3087: case 0x308E:
+        case 0x30A1: case 0x30A3: case 0x30A5: case 0x30A7: case 0x30A9:
+        case 0x30C3: case 0x30E3: case 0x30E5: case 0x30E7: case 0x30EE:
+        case 0x30F5: case 0x30F6:
+        case 0x3093:  // ん
+        case 0x30F3:  // ン
+            return true;
+        default:
+            return cp >= 0x3099 && cp <= 0x309C;  // combining voiced sound marks
+    }
+}
+
+// Break before codepoints[index]?
+//
+// Latin and digits stay together until whitespace, so a word is one segment.
+// CJK breaks per character, but never before a character that cannot start one
+// (see IsNoBreakBefore), so スーパー comes out as スー / パー rather than being
+// split at the long vowel. Punctuation trails the segment it follows, and a
+// script change always breaks.
+bool IsSegmentBreak(const std::vector<int>& codepoints, std::size_t index) {
+    const int previous = codepoints[index - 1];
+    const int current = codepoints[index];
+    if (IsSpaceCodepoint(previous)) return true;
+    if (IsNoBreakBefore(current)) return false;
+    if (IsApostrophe(current) || IsApostrophe(previous)) return false;
+    if (IsPunctuationCodepoint(current)) return false;
+    if (IsPunctuationCodepoint(previous)) return true;
+    if (IsCjkCodepoint(previous) != IsCjkCodepoint(current)) return true;
+    return IsCjkCodepoint(current);
+}
+
 void ReadUniformValue(const sol::object& value, Uniform& uniform) {
     if (value.is<bool>()) {
         uniform.count = 1;
@@ -548,6 +614,63 @@ struct PluginHost::Impl {
                 lines[i + 1] = text.LineWidth(i);
             }
             result["lines"] = lines;
+            return result;
+        });
+
+        // Split a string into segments a preset can animate as units: words for
+        // Latin/digit runs, one segment per character for CJK, with long vowels
+        // and small kana kept attached. Each entry carries the glyph range and
+        // its measured width, so `l:text` can place it directly.
+        frame.set_function("words", [this](sol::table, const std::string& value) {
+            text.SetText(value);
+            const int glyph_count = text.GlyphCount();
+            std::vector<int> codepoints(static_cast<std::size_t>(glyph_count));
+            for (int i = 0; i < glyph_count; i++) {
+                codepoints[static_cast<std::size_t>(i)] = text.GlyphAt(i).codepoint;
+            }
+
+            sol::table result = lua.create_table();
+            const auto emit = [&](int begin, int end) {
+                if (end <= begin) return;
+                std::string segment_text;
+                float width = 0.0f;
+                for (int i = begin; i < end; i++) {
+                    int size = 0;
+                    const char* utf8 =
+                        CodepointToUTF8(codepoints[static_cast<std::size_t>(i)], &size);
+                    if (utf8 != nullptr && size > 0) {
+                        segment_text.append(utf8, static_cast<std::size_t>(size));
+                    }
+                    width += text.GlyphAdvance(i);
+                }
+                sol::table entry = lua.create_table();
+                entry["text"] = segment_text;
+                entry["index"] = begin;  // 0-based glyph index
+                entry["count"] = end - begin;
+                entry["x"] = text.GlyphAt(begin).x;
+                entry["width"] = width;
+                result[result.size() + 1] = entry;
+            };
+
+            int start = -1;
+            for (int i = 0; i < glyph_count; i++) {
+                if (IsSpaceCodepoint(codepoints[static_cast<std::size_t>(i)])) {
+                    if (start >= 0) {
+                        emit(start, i);
+                        start = -1;
+                    }
+                    continue;
+                }
+                if (start < 0) {
+                    start = i;
+                    continue;
+                }
+                if (IsSegmentBreak(codepoints, static_cast<std::size_t>(i))) {
+                    emit(start, i);
+                    start = i;
+                }
+            }
+            if (start >= 0) emit(start, glyph_count);
             return result;
         });
 
@@ -1155,6 +1278,15 @@ int PluginHost::SelectSearchResult(const PluginMetadata& query,
 
 void PluginHost::SetPreset(const std::string& name_or_path) {
     if (name_or_path.empty() || name_or_path == "default") {
+        // A default.lua in the user or system preset directory wins over the
+        // built-in fallback, so the shipped default can be edited like any
+        // other preset.
+        const std::string path = PresetPath("default");
+        struct stat info;
+        if (stat(path.c_str(), &info) == 0) {
+            SetPreset(path);
+            return;
+        }
         impl_->preset_path.clear();
         impl_->is_default = true;
         impl_->SetSource(kDefaultPreset);

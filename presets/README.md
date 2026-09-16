@@ -8,13 +8,13 @@ Lua 歌词样式。放到 `~/.config/raylyrics/presets/`，在 `config.lua` 设 
 
 | 文件 | 说明 |
 | --- | --- |
+| `default.lua` | 默认样式：当前行 + 下一行 + bloom（`preset = "default"` 会用它） |
 | `glow.lua` | 当前/下一行 + bloom 辉光 |
 | `boxed.lua` | 底部半透明背景条 |
 | `slide.lua` | 新行上滑淡入 |
 | `wave.lua` | 逐字正弦波动 |
 | `prism.lua` | 全屏彩虹：字符按网格铺满全屏、粒子、旋转多边形描边、bloom |
 | `layeronly.lua` | 最小 layer 示例 |
-| `bloomdebug.lua` | bloom/后处理调试 |
 
 ## preset 声明
 

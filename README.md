@@ -273,6 +273,7 @@ the window exists so it can declare its viewport (see below).
 | `f:image(path, {anchor, offset_x, offset_y, w, h, color})` | |
 | `f:push() / f:pop() / f:translate(x, y) / f:rotate(deg) / f:scale(s)` | matrix stack |
 | `f:measure(str)` | `{ width, height, line_height, line_count, lines }` (`lines` = per-line widths) |
+| `f:words(str)` | split into segments: `{ { text, index, count, x, width }, ... }` |
 | `f:width`, `f:height` | surface size |
 | `f:shader(name, frag) -> bool` | register a custom fullscreen fragment shader |
 | `f:uniforms({...})` | ambient uniforms applied to every layer shader this frame |
@@ -301,6 +302,22 @@ shader that frame; per-layer `uniforms` with the same name win. Uniform values
 are typed from their Lua value — number → `float`, boolean → `int`, array →
 `vec2/3/4` — or declared explicitly as `{ type = "int"|"float"|"vec2"|"vec3"|"vec4", value = ... }`.
 `u_resolution`, `u_time` and `u_line_progress` are injected automatically.
+
+### Word segmentation
+
+`f:words(str)` splits a string into the units a preset can animate as a whole.
+Latin and digit runs stay together until whitespace, so a word is one segment;
+CJK breaks per character, but never before a character that cannot start one, so
+long vowels and small kana stay attached (`スーパー` → `スー | パー`,
+`パンケーキ` → `パン | ケー | キ`). Punctuation trails the segment it follows
+(`君の名は。` → `君 | の | 名 | は。`), apostrophes stay inside (`don't`,
+`ROCK'N'ROLL`), and a script change always breaks (`2024年` → `2024 | 年`).
+
+Each segment carries the glyph range it covers (`index`, `count`), the x it
+starts at and its measured `width`, so it can be drawn with `l:text` directly.
+
+Note: like `measure` and `text`, it can only shape codepoints the prepared song
+text contains — the Slug fonts are subset per song.
 
 ### Per-glyph callbacks
 

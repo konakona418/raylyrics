@@ -307,6 +307,20 @@ TextRenderer::GlyphMetrics TextRenderer::GlyphAt(int index) const {
                         placement.baseline};
 }
 
+float TextRenderer::GlyphAdvance(int index) const {
+    if (index < 0 || index >= static_cast<int>(impl_->placements.size())) return 0.0f;
+    const Impl::Placement& placement = impl_->placements[index];
+    if (index + 1 < static_cast<int>(impl_->placements.size()) &&
+        impl_->placements[index + 1].line == placement.line) {
+        return impl_->placements[index + 1].x - placement.x;
+    }
+    const float line_width =
+        (placement.line >= 0 && placement.line < static_cast<int>(impl_->line_widths.size()))
+            ? impl_->line_widths[static_cast<std::size_t>(placement.line)]
+            : placement.x;
+    return line_width - placement.x;
+}
+
 void TextRenderer::DrawGlyph(int index, float origin_x, float origin_y, float dx, float dy,
                              float scale_mul, float rotation, Color tint) const {
     if (index < 0 || index >= static_cast<int>(impl_->placements.size())) return;

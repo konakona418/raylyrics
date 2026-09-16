@@ -71,6 +71,10 @@ public:
     int GlyphCount() const;
     GlyphMetrics GlyphAt(int index) const;
 
+    // Advance width of a glyph within its line, so a run of glyphs can be
+    // measured (used by the word-segmentation API).
+    float GlyphAdvance(int index) const;
+
     // Draw the index-th glyph at origin + its pen position, with an extra
     // translate/scale/rotate and tint.
     void DrawGlyph(int index, float origin_x, float origin_y, float dx, float dy,

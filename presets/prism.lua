@@ -100,7 +100,7 @@ local function utf8_count(text)
   return count
 end
 
-local FONT_SIZE = 150  -- declared below; Slug is resolution independent, so the
+local FONT_SIZE = 200  -- declared below; Slug is resolution independent, so the
                        -- per-glyph scale keeps it relative to the screen.
 
 local function draw_lyric(l, f, ctx, time)
